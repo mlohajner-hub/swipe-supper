@@ -667,7 +667,7 @@ function offersPanel(L){
    the chain's page for your store's town (matpriskollen.se/mataffarer/willys/stockholm), where your store is listed. */
 var MPK_CHAIN={'ICA':'ica','Willys':'willys','Lidl':'lidl','Coop':'coop','Hemköp':'hemkop','City Gross':'city-gross'};
 function mpkSlug(s){return String(s).toLowerCase().replace(/[åä]/g,'a').replace(/ö/g,'o').replace(/é/g,'e').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')}
-function storeCity(s){var parts=String(s.address||'').split(',');return parts.length>1?parts[parts.length-1].trim():''}
+function storeCity(s){if(s.city)return s.city;var parts=String(s.address||'').split(',');return parts.length>1?parts[parts.length-1].trim():''}
 function mpkUrl(s){
   var chain=MPK_CHAIN[s.chain],city=storeCity(s);
   if(!chain)return 'https://matpriskollen.se/erbjudanden';
@@ -675,7 +675,7 @@ function mpkUrl(s){
 }
 
 /* stores sheet */
-var storeResults=null,storeBusy=false,storeWhere='';
+var storeResults=null,storeBusy=false,storeWhere='',storeTown='';
 function storeRow(s,chosen){
   return '<div class="pick store-row"><span class="chain-dot" aria-hidden="true">'+esc(s.chain==='City Gross'?'CG':s.chain.slice(0,2))+'</span><span class="slot-txt"><b>'+esc(s.name)+'</b><em>'+esc(s.address||s.chain)+(!chosen&&s.dist!=null?' · '+s.dist.toFixed(1)+' km':'')+'</em></span>'
     +(chosen?'<a class="btn" href="'+esc(mpkUrl(s))+'" target="_blank" rel="noopener" title="This week\'s offers on Matpriskollen">Offers ↗</a>':'')
@@ -696,7 +696,7 @@ function paintStores(keep){
 }
 function findStores(where){
   storeBusy=true;paintStores(true);
-  where.then(function(p){storeWhere=p.label;return storesNear(p.lat,p.lon,5).then(function(r){return r.length>=3?r:storesNear(p.lat,p.lon,15)})})
+  where.then(function(p){storeWhere=p.label;storeTown=p.city||'';return storesNear(p.lat,p.lon,5).then(function(r){return r.length>=3?r:storesNear(p.lat,p.lon,15)})})
     .then(function(r){storeResults=r;storeBusy=false;if(sheetState&&sheetState.type==='stores')paintStores(true)})
     .catch(function(e){storeBusy=false;toast(e&&e.message||'Store search failed');if(sheetState&&sheetState.type==='stores')paintStores(true)});
 }
@@ -956,7 +956,7 @@ document.addEventListener('click',function(e){
     case 'storeslocate':findStores(currentPosition());break;
     case 'storeadd':
       var sf=(storeResults||[]).filter(function(s){return s.id===a})[0];
-      if(sf&&!st.stores.some(function(s){return s.id===a})){st.stores.push({id:sf.id,chain:sf.chain,name:sf.name,address:sf.address,lat:sf.lat,lon:sf.lon});save();renderAll();paintStores(true)}
+      if(sf&&!st.stores.some(function(s){return s.id===a})){st.stores.push({id:sf.id,chain:sf.chain,name:sf.name,address:sf.address,city:storeCity(sf)||(sf.dist<=15?storeTown:''),lat:sf.lat,lon:sf.lon});save();renderAll();paintStores(true)}
       break;
     case 'storedel':st.stores=st.stores.filter(function(s){return s.id!==a});save();renderAll();paintStores(true);break;
     case 'offers':offerDelArmed=null;paintOffers();break;

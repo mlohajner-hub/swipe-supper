@@ -40,12 +40,20 @@ function km(a,b,c,d){
 export async function geocodePostcode(pc){
   const code=String(pc).replace(/\s+/g,'');
   if(!/^\d{5}$/.test(code))throw new Error('Enter a five-digit postcode');
-  const r=await timedFetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&countrycodes=se&postalcode='+code,{headers:{'Accept-Language':'sv,en'}},15000)
+  const r=await timedFetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&addressdetails=1&countrycodes=se&postalcode='+code,{headers:{'Accept-Language':'sv,en'}},15000)
     .catch(function(){throw new Error('The postcode lookup is not answering right now')});
   if(!r.ok)throw new Error('The postcode lookup is not answering right now');
   const j=await r.json();
   if(!j.length)throw new Error('Could not find postcode '+code.slice(0,3)+' '+code.slice(3));
-  return {lat:+j[0].lat,lon:+j[0].lon,label:code.slice(0,3)+' '+code.slice(3)};
+  return {lat:+j[0].lat,lon:+j[0].lon,label:code.slice(0,3)+' '+code.slice(3),city:townOf(j[0].address)};
+}
+/* The town a postcode or position belongs to, for stores whose OpenStreetMap address has none. */
+function townOf(a){a=a||{};return (a.city||a.town||a.village||a.municipality||'').replace(/ kommun$/,'')}
+async function townAt(lat,lon){
+  try{
+    const r=await timedFetch('https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=10&addressdetails=1&lat='+lat+'&lon='+lon,{headers:{'Accept-Language':'sv,en'}},15000);
+    return r.ok?townOf((await r.json()).address):'';
+  }catch(e){return ''}
 }
 
 /* Supermarkets of the six chains within radius km, nearest first. */
@@ -70,7 +78,10 @@ async function overpassNear(lat,lon,radiusKm){
 export function currentPosition(){
   return new Promise(function(res,rej){
     if(!navigator.geolocation)return rej(new Error('Location is not available on this device'));
-    navigator.geolocation.getCurrentPosition(function(p){res({lat:p.coords.latitude,lon:p.coords.longitude,label:'your location'})},
+    navigator.geolocation.getCurrentPosition(function(p){
+        const lat=p.coords.latitude,lon=p.coords.longitude;
+        townAt(lat,lon).then(function(city){res({lat:lat,lon:lon,label:city||'your location',city:city})});
+      },
       function(){rej(new Error('Location permission was not given'))},{enableHighAccuracy:false,timeout:15000,maximumAge:600000});
   });
 }
