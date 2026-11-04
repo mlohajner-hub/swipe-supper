@@ -5,7 +5,8 @@ import {loadPhotos,putPhoto,deletePhoto,clearPhotos,getCached,putCached} from '.
 import {saveBackup,readBackup,BACKUP_APP} from './backup.js';
 import {fetchAllMeals,convertMeal,SERVINGS as ONLINE_SERVINGS} from './mealdb.js';
 import {CHAINS,geocodePostcode,storesNear,currentPosition} from './stores.js';
-import {matchItem,isActive,todayISO,thisSunday,kr,shortDate} from './offers.js';
+import {matchItem,isActive,todayISO,thisSunday,kr,shortDate,SV} from './offers.js';
+import {canImport,importFromUrl,fetchPhoto} from './importer.js';
 import {packRecipe,unpackRecipe,findPacked,shareUrl,appIntentUrl,isAndroidBrowser,shareLink,onAppLink} from './share.js';
 
 /* ---------- recipes ---------- */
@@ -18,7 +19,7 @@ var KNOWN={};Object.keys(ING).forEach(function(k){KNOWN[slug(ING[k][0])]=k});
    built-in ingredient; anything else gets its own key per name+unit so it still merges across recipes. */
 function ingKey(it){
   var u=UNITS.filter(function(x){return x[0]===it.unit})[0]||UNITS[5],k=KNOWN[slug(it.name)];
-  if(k&&ING[k][1]===u[1])return {key:k,amt:it.amt*u[2]};
+  if(k&&(ING[k][1]===u[1]||(u[1]==='pcs'&&(ING[k][1]==='cloves'||ING[k][1]==='slices'))))return {key:k,amt:it.amt*u[2]}; /* "2 pcs" garlic = 2 cloves */
   k='c:'+slug(it.name)+'|'+u[1];
   if(!ING[k])ING[k]=[String(it.name).trim(),u[1],AISLES.indexOf(it.aisle)>-1?it.aisle:aK,'',AISLE_COLOUR[it.aisle]||'#C9B24A'];
   return {key:k,amt:it.amt*u[2]};
@@ -424,7 +425,8 @@ function paintRecipe(keep){
   +'<div class="sheet-sec"><h3>Ingredients</h3><ul class="ing">'+r.ings.map(function(p){return '<li><span>'+esc(ING[p[0]][0])+offerLine(p[0])+'</span><span>'+esc(recQty(p[0],p[1]))+'</span></li>'}).join('')+'</ul></div>'
   +'<div class="sheet-sec"><h3>Method</h3><ol class="steps">'+r.steps.map(function(s){return '<li><span>'+esc(s)+'</span></li>'}).join('')+'</ol></div>'
   +(r.mine?'<div class="row" style="margin-top:20px"><button class="btn" data-act="editrecipe" data-a="'+r.id+'">Edit this recipe</button></div><p class="note">'
-    +(r.from?'Shared with you by '+esc(r.from)+'. Your copy is saved on this device, and editing it doesn\'t change theirs.':'Your own recipe.')
+    +(r.from?'Shared with you by '+esc(r.from)+'. Your copy is saved on this device, and editing it doesn\'t change theirs.'
+      :r.source?'Imported from <a href="'+esc(r.source)+'" target="_blank" rel="noopener">'+esc(hostOf(r.source))+'</a> for your own use. Check the amounts and diet ticks.':'Your own recipe.')
     +' Amounts are scaled from the servings entered to the number of people you set at the top.</p>'
     :r.online?'<p class="note">Recipe and photo from <a href="'+esc(r.link)+'" target="_blank" rel="noopener">TheMealDB</a>'+(r.source?' (<a href="'+esc(r.source)+'" target="_blank" rel="noopener">original source</a>)':'')+'. TheMealDB gives no servings, so amounts assume '+ONLINE_SERVINGS+' and are scaled to the number of people you set at the top; measures are converted to metric. Diet labels are worked out from the ingredient names, so check packaging if an allergy matters. Salt, pepper and water are not listed.</p>'
     :'<p class="note">Starter recipe written by Claude. Amounts are for 2 servings and scaled to the number of people you set at the top. Salt and pepper are not listed.</p>');
@@ -467,11 +469,12 @@ function renderMine(){
   var list=mine.length?mine.map(recipeRow).join('')
     :'<p style="margin:0 0 12px;color:var(--muted)">Recipes you add here show up in the swipe deck with the others, follow the same filters and go on the shopping list.</p>';
   $('view-mine').innerHTML='<div class="panel"><p class="h-label">My recipes ('+mine.length+')</p>'+list
-    +'<button class="btn primary wide" style="margin-top:10px" data-act="newrecipe">+ New recipe</button></div>'
+    +'<button class="btn primary wide" style="margin-top:10px" data-act="newrecipe">+ New recipe</button>'
+    +'<button class="btn wide" style="margin-top:8px" data-act="webimport">Import from a recipe website</button></div>'
     +'<div class="panel"><p class="h-label">From friends ('+(all.length-mine.length)+')</p>'
     +(friends.length?friends.map(function(f){return '<p class="friend-name">'+esc(f)+' &middot; '+byFriend[f].length+'</p>'+byFriend[f].map(recipeRow).join('')}).join('')
       :'<p style="margin:0 0 12px;color:var(--muted)">When a friend shares a recipe link with you, open it and it lands here, with their name on it. Open one of your recipes and tap <b>Share with friends</b> to send yours.</p>')
-    +'<button class="btn" style="margin-top:10px" data-act="pastelink">Add from a link</button>'
+    +'<button class="btn" style="margin-top:10px" data-act="pastelink">Add from a friend\'s link</button>'
     +'<label class="field form" style="margin-top:14px"><span>Your name, shown on recipes you share</span><input id="nameInput" maxlength="40" placeholder="e.g. Mario" value="'+esc(st.name||'')+'"></label></div>'
     +'<div class="panel"><p class="h-label">Online recipes</p><p style="margin:0 0 12px;color:var(--muted)">'
     +(onlineBusy?'Downloading recipes from TheMealDB…':ONLINE.length?ONLINE.length+' recipes with photos from <a href="https://www.themealdb.com" target="_blank" rel="noopener">TheMealDB</a>, kept on this device'+(onlineAt?' (updated '+new Date(onlineAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'})+')':'')+'. '+(st.online?'They are mixed into the swipe deck.':'They are hidden from the deck.'):st.online?'Recipes with photos from TheMealDB download the first time you are online.':'Switched off.')+'</p>'
@@ -493,12 +496,13 @@ function fchips(group,values,on){
   return '<div class="chips wrap" style="padding:0 0 4px" role="group">'+values.map(function(v){return '<button type="button" class="chip'+(group==='diet'?' diet':'')+'" data-act="fchip" data-group="'+group+'" data-a="'+esc(v)+'" aria-pressed="'+(on.indexOf(v)>-1)+'">'+esc(MEAL_LABEL[v]||v)+'</button>'}).join('')+'</div>';
 }
 var delArmed=false;
-function openEditor(id){
+/* draft: a recipe read from a website, opened unsaved so you can check it first. */
+function openEditor(id,draft){
   var c=st.custom.filter(function(x){return x.id===id})[0];
-  var d=c||{name:'',meals:[st.mealFilter==='all'?'dinner':st.mealFilter],time:30,servings:2,tags:[],diet:{},ings:[],steps:[]};
+  var d=c||draft||{name:'',meals:[st.mealFilter==='all'?'dinner':st.mealFilter],time:30,servings:2,tags:[],diet:{},ings:[],steps:[]};
   var rows=(d.ings.length?d.ings:[null,null,null]).map(ingRow).join('');
   delArmed=false;
-  sheetState={type:'editor',id:c?c.id:null};
+  sheetState={type:'editor',id:c?c.id:null,source:draft?draft.source:'',photoP:draft?draft.photoP:null};
   openSheet('<form id="recipeForm" class="form" novalidate><h2 class="sheet-title" style="margin-top:18px">'+(c?'Edit recipe':'New recipe')+'</h2>'
     +'<label class="field"><span>Name</span><input name="name" maxlength="80" required value="'+esc(d.name)+'"></label>'
     +'<p class="h-label">Meals</p>'+fchips('meals',MEAL_ORDER,d.meals)
@@ -536,8 +540,17 @@ function saveEditor(f){
   delete d.bad;
   d.id=sheetState.id||('u-'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36));
   var i=st.custom.map(function(x){return x.id}).indexOf(d.id);
-  if(i>-1){if(st.custom[i].from){d.from=st.custom[i].from;d.origin=st.custom[i].origin}st.custom[i]=d} /* a friend's recipe stays theirs */
-  else st.custom.push(d);
+  if(i>-1){
+    var old=st.custom[i];
+    if(old.from){d.from=old.from;d.origin=old.origin} /* a friend's recipe stays theirs */
+    if(old.source)d.source=old.source;
+    st.custom[i]=d;
+  }else{
+    if(sheetState.source)d.source=sheetState.source;
+    st.custom.push(d);
+  }
+  /* an imported recipe's photo arrives in the background and is kept on the phone like your own photos */
+  if(sheetState.photoP){var pid=d.id;sheetState.photoP.then(function(url){if(url&&!photos[pid]){setPhoto(pid,url);renderAll();if(sheetState&&sheetState.type==='recipe'&&sheetState.id===pid)paintRecipe(true)}})}
   save();rebuildRecipes();renderAll();
   var r=BYID[d.id],lost=DIETS.filter(function(x){return d.diet[x]&&!r.diet[x]});
   openRecipe(d.id);
@@ -794,6 +807,34 @@ document.addEventListener('change',function(e){
   if(e.target.id==='nameInput'){st.name=e.target.value.trim().slice(0,40);save();rebuildRecipes();renderAll();toast(st.name?'Name saved':'Name removed')}
 });
 
+/* ---------- import from a recipe website ---------- */
+var webBusy=false;
+function hostOf(u){try{return new URL(u).hostname.replace(/^www\./,'')}catch(e){return 'the web'}}
+function knownForImport(){var k={};Object.keys(SV).forEach(function(x){if(ING[x])k[x]={name:ING[x][0],aisle:ING[x][2],flags:ING[x][3]||''}});return k}
+function openWebImport(){
+  sheetState={type:'webimport'};
+  openSheet('<form id="webForm" class="form" novalidate><h2 class="sheet-title" style="margin-top:18px">Import from a recipe website</h2>'
+    +(canImport()?'<p style="color:var(--muted)">Find a recipe on Köket, Arla, Coop, BBC Good Food or another recipe site, copy the link and paste it here. You can check and change everything before it\'s saved.</p>'
+      +'<label class="field"><span>Recipe link</span><input name="url" type="url" inputmode="url" placeholder="https://…" autocomplete="off"></label>'
+      +'<div class="row" style="margin-top:16px"><button type="submit" class="btn primary"'+(webBusy?' disabled':'')+'>'+(webBusy?'Reading the recipe…':'Import')+'</button><button type="button" class="btn" data-act="close">Cancel</button></div>'
+      +'<p class="note">The app reads only the page you paste, like your browser would, and saves the recipe on this phone for your own use. Some sites don\'t allow apps to read their pages; those are left alone.</p>'
+    :'<p style="color:var(--muted)">This works in the Android app. A web page isn\'t allowed to read other websites.</p><div class="row" style="margin-top:16px"><button type="button" class="btn" data-act="close">Close</button></div>')
+    +'</form>','Import recipe');
+}
+document.addEventListener('submit',function(e){
+  if(e.target.id!=='webForm')return;
+  e.preventDefault();
+  var url=(e.target.elements.url.value||'').trim().match(/https?:\/\/\S+/);
+  if(!url){toast('Paste the full link, starting with https://');return}
+  webBusy=true;openWebImport();
+  importFromUrl(url[0],knownForImport()).then(function(d){
+    webBusy=false;
+    d.photoP=fetchPhoto(d.image);
+    openEditor(null,d);
+    toast('Check the recipe, then save it');
+  }).catch(function(err){webBusy=false;if(sheetState&&sheetState.type==='webimport')openWebImport();toast(err&&err.message||'Could not read that page')});
+});
+
 /* ---------- render all ---------- */
 function renderHeader(){
   $('pLabel').textContent=ppl(st.portions);$('pMinus').disabled=st.portions<=1;$('pPlus').disabled=st.portions>=5;
@@ -895,6 +936,7 @@ document.addEventListener('click',function(e){
     case 'share':shareRecipe(a);break;
     case 'importadd':importRecipe();break;
     case 'pastelink':openPasteLink();break;
+    case 'webimport':openWebImport();break;
     case 'stores':paintStores();break;
     case 'storeslocate':findStores(currentPosition());break;
     case 'storeadd':

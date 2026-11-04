@@ -73,7 +73,7 @@ export function parseMeasure(raw){
 /* ---------- ingredients ---------- */
 const SKIP=/^(null|undefined|salt|sea salt|table salt|kosher salt|salt and pepper|pepper|black pepper|ground black pepper|white pepper|water|cold water|warm water|hot water|boiling water|ice|ice cubes)$/;
 /* MealDB names that are the same thing as a built-in ingredient, so they merge with the starter recipes. */
-const ALIAS={
+export const ALIAS={
   'onion':'onion','onions':'onion','brown onion':'onion','yellow onion':'onion','white onion':'onion','red onion':'redonion','red onions':'redonion',
   'garlic':'garlic','garlic clove':'garlic','garlic cloves':'garlic','carrot':'carrot','carrots':'carrot','potato':'potato','potatoes':'potato',
   'sweet potato':'sweetpotato','sweet potatoes':'sweetpotato','tomato':'tomato','tomatoes':'tomato','cherry tomatoes':'cherrytomato','cucumber':'cucumber',
@@ -122,7 +122,7 @@ export function dietFlags(name){
 const PRODUCE=/\b(onions?|shallots?|garlic|carrots?|potato(es)?|tomato(es)?|peppers?|chill(i|ies|y)|jalape[nñ]os?|lettuce|cabbage|leeks?|celery|courgettes?|zucchini|aubergines?|eggplants?|squash|pumpkin|spinach|kale|chard|broccoli|cauliflower|mushrooms?|lemons?|limes?|oranges?|apples?|pears?|bananas?|berries|strawberries|raspberries|blueberries|avocados?|ginger|parsley|coriander leaves|fresh coriander|basil|mint|dill|thyme|rosemary|sage|chives|tarragon|beansprouts|bean sprouts|cucumbers?|radish(es)?|beetroots?|fennel|asparagus|sweetcorn|corn on the cob|parsnips?|turnips?|swede|okra|green beans|runner beans|mangetout|sugar snap|pak choi|bok choy|watercress|rocket|arugula|salad|mangoes?|mango|pineapple|grapes?|cherries|plums?|peach(es)?|nectarines?|figs?|pomegranates?|lemongrass|spring onions?|scallions?|herbs|plantains?|cassava|yams?|edamame|artichokes?|kiwi|melon|watermelon|papaya|coconut flesh)\b/;
 const BASICS=/\b(oil|ground|powder|paprika|cumin|turmeric|cinnamon|nutmeg|oregano|cayenne|garam masala|seeds|bay leaf|bay leaves|allspice|cardamom|fenugreek|saffron|star anise|five spice|spice|seasoning|dried herbs|mixed herbs|peppercorns|chilli flakes|chili flakes|curry powder|za'?atar|sumac|vanilla|stock cubes?|bouillon|msg)\b/;
 const BAKERY=/\b(bread|baguette|ciabatta|brioche|rolls?|buns?|tortillas?|pitta|pita|naan|wraps?|croissants?|bagels?|oats|muesli|cereal|crumpets?|muffins?)\b/;
-function aisleFor(name,flags,unit){
+export function aisleFor(name,flags,unit){
   const n=name.toLowerCase();
   if(/\bfrozen\b/.test(n))return aF;
   if(/\b(tinned|canned|tin of|can of|dried|jar)\b/.test(n))return aK;
