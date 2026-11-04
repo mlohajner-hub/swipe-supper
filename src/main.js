@@ -4,6 +4,8 @@ import {aP,aM,aD,aB,aK,aF,aS,AISLES,ING,STAPLES,RAW,MEALS,MEAL_LABEL,MEAL_ORDER,
 import {loadPhotos,putPhoto,deletePhoto,clearPhotos,getCached,putCached} from './photos.js';
 import {saveBackup,readBackup,BACKUP_APP} from './backup.js';
 import {fetchAllMeals,convertMeal,SERVINGS as ONLINE_SERVINGS} from './mealdb.js';
+import {CHAINS,geocodePostcode,storesNear,currentPosition} from './stores.js';
+import {matchItem,isActive,todayISO,thisSunday,kr,shortDate} from './offers.js';
 
 /* ---------- recipes ---------- */
 /* A recipe definition: built-in rows from RAW, online recipes from TheMealDB, or the user's own recipes from st.custom.
@@ -50,7 +52,7 @@ function rebuildRecipes(){
   var mine=st.custom.map(customRecipe);
   RECIPES=BUILTIN.concat(st.online?ONLINE:[],mine);
   BYID={};BUILTIN.concat(ONLINE,mine).forEach(function(r){BYID[r.id]=r});
-  plateCache={};
+  plateCache={};itemCache={};
 }
 function setOnline(meals,at){
   ONLINE=[];meals.forEach(function(m){try{ONLINE.push(onlineRecipe(m))}catch(e){}});
@@ -73,12 +75,14 @@ function refreshOnline(manual){
 /* ---------- state ---------- */
 /* Everything is saved on this device only (localStorage; photos in IndexedDB). Use the backup file to move or keep it. */
 var KEY='swipe-supper.v1';
-function defaults(){return {portions:2,meals:{breakfast:false,lunch:false,dinner:true},mealFilter:'dinner',tag:'All',diet:[],liked:[],skipped:[],plan:{},have:STAPLES.slice(),done:{},custom:[],online:true,seed:Math.floor(Math.random()*1e9),updated:0}}
-function normalise(o){var d=defaults();var s=Object.assign(d,o||{});s.meals=Object.assign(defaults().meals,(o&&o.meals)||{});if(!Array.isArray(s.custom))s.custom=[];return s}
+function defaults(){return {portions:2,meals:{breakfast:false,lunch:false,dinner:true},mealFilter:'dinner',tag:'All',diet:[],liked:[],skipped:[],plan:{},have:STAPLES.slice(),done:{},custom:[],online:true,stores:[],offers:[],saleOnly:false,postcode:'',seed:Math.floor(Math.random()*1e9),updated:0}}
+function normalise(o){var d=defaults();var s=Object.assign(d,o||{});s.meals=Object.assign(defaults().meals,(o&&o.meals)||{});if(!Array.isArray(s.custom))s.custom=[];if(!Array.isArray(s.stores))s.stores=[];if(!Array.isArray(s.offers))s.offers=[];return s}
 var st=defaults();
 try{var raw=localStorage.getItem(KEY);if(raw)st=normalise(JSON.parse(raw))}catch(e){}
-var photos={},plateCache={};
+var photos={},plateCache={},itemCache={},saleBy={};
 rebuildRecipes();
+/* Offers that ended more than a month ago are tidied away. */
+(function(){var cut=todayISO(new Date(Date.now()-30*86400000));st.offers=st.offers.filter(function(o){return !o.validTo||o.validTo>=cut})})();
 
 function save(){
   st.updated=Date.now();
@@ -129,27 +133,34 @@ function artInner(r,size){
 function artHtml(r,size){return '<div class="art" style="--c:'+r.colors[0]+'">'+artInner(r,size)+'</div>'}
 function thumb(r){return '<span class="thumb" style="--c:'+r.colors[0]+'">'+artInner(r,'small')+'</span>'}
 function pills(r,max){
-  var out=r.mine?[['Mine',2]]:r.online?[['Online',0]]:[];
+  var out=r.mine?[['Mine',2]]:r.online?[['Online',0]]:[],sc=saleCount(r);
+  if(sc)out.unshift(['On sale: '+sc+(sc===1?' item':' items'),3]);
   if(r.diet.Vegan)out.push(['Vegan',1]);else if(r.diet.Vegetarian)out.push(['Vegetarian',1]);else if(r.fish&&r.diet.Pescatarian)out.push(['Pescatarian',1]);
   if(r.diet['Gluten-free'])out.push(['Gluten-free',1]);
   if(r.diet['Dairy-free'])out.push(['Dairy-free',1]);
   r.tags.forEach(function(t){if(t!=='Mine')out.push([t,0])});
-  return out.slice(0,max||5).map(function(p){return '<span class="pill'+(p[1]===2?' mine':p[1]?' diet':'')+'">'+esc(p[0])+'</span>'}).join('');
+  return out.slice(0,max||5).map(function(p){return '<span class="pill'+(p[1]===3?' sale':p[1]===2?' mine':p[1]?' diet':'')+'">'+esc(p[0])+'</span>'}).join('');
 }
 
 /* ---------- discover ---------- */
 var history=[],drag=null,busy=false;
 function baseFiltered(){return RECIPES.filter(function(r){return (st.mealFilter==='all'||r.meals.indexOf(st.mealFilter)>-1)&&st.diet.every(function(d){return r.diet[d]})})}
 function remaining(){return baseFiltered().filter(function(r){return st.liked.indexOf(r.id)<0&&st.skipped.indexOf(r.id)<0})}
+/* "Cook what's on sale": only recipes using something on offer at your stores, the most on-sale ingredients first. */
 function deckList(){
-  return remaining().filter(function(r){return st.tag==='All'||r.tags.indexOf(st.tag)>-1}).sort(function(a,b){return hash(a.id+st.seed)-hash(b.id+st.seed)});
+  return remaining().filter(function(r){return (st.tag==='All'||r.tags.indexOf(st.tag)>-1)&&(!st.saleOnly||saleCount(r)>0)})
+    .sort(function(a,b){return (st.saleOnly?saleCount(b)-saleCount(a):0)||hash(a.id+st.seed)-hash(b.id+st.seed)});
 }
 function filtersHtml(){
   var base=remaining(),counts={};
+  var onSale=base.filter(function(r){return saleCount(r)>0}).length;
+  if(st.saleOnly)base=base.filter(function(r){return saleCount(r)>0});
   TAGS.forEach(function(t){counts[t]=base.filter(function(r){return t==='All'||r.tags.indexOf(t)>-1}).length});
   var meals=[['all','All'],['breakfast','Breakfast'],['lunch','Lunch'],['dinner','Dinner']];
   return '<div class="seg" role="group" aria-label="Meal type">'+meals.map(function(m){return '<button aria-pressed="'+(st.mealFilter===m[0])+'" data-act="mealfilter" data-a="'+m[0]+'">'+m[1]+'</button>'}).join('')+'</div>'
-  +'<div class="chips" role="group" aria-label="Style">'+TAGS.filter(function(t){return counts[t]>0||t===st.tag}).map(function(t){return '<button class="chip" aria-pressed="'+(st.tag===t)+'" data-act="tag" data-a="'+t+'">'+t+'<span class="n">'+counts[t]+'</span></button>'}).join('')+'</div>'
+  +'<div class="chips" role="group" aria-label="Style">'
+  +(onSale||st.saleOnly?'<button class="chip sale" aria-pressed="'+!!st.saleOnly+'" data-act="saleonly" title="Cook what\'s on sale">On sale<span class="n">'+onSale+'</span></button>':'')
+  +TAGS.filter(function(t){return counts[t]>0||t===st.tag}).map(function(t){return '<button class="chip" aria-pressed="'+(st.tag===t)+'" data-act="tag" data-a="'+t+'">'+t+'<span class="n">'+counts[t]+'</span></button>'}).join('')+'</div>'
   +'<div class="chips" role="group" aria-label="Diet"><span class="chip-label">Diet</span>'+DIETS.map(function(d){return '<button class="chip diet" aria-pressed="'+(st.diet.indexOf(d)>-1)+'" data-act="diet" data-a="'+d+'">'+d+'</button>'}).join('')+'</div>';
 }
 function cardHtml(r,pos){
@@ -301,17 +312,17 @@ function itemRow(i,home){
   var done=!home&&st.done[i.key];
   return '<div class="item'+(done?' done':'')+'">'
   +(home?'<span></span>':'<button class="check" role="checkbox" aria-checked="'+!!done+'" aria-label="'+esc(i.name)+'" data-act="tick" data-a="'+i.key+'">'+(done?ico(I.check,16,3):'')+'</button>')
-  +'<div class="item-txt"><b>'+esc(i.name)+'</b><small>'+esc(i.uses)+'</small></div>'
+  +'<div class="item-txt"><b>'+esc(i.name)+'</b><small>'+esc(i.uses)+'</small>'+(home?'':offerLine(i.key))+'</div>'
   +'<div class="item-r"><span class="amt">'+esc(i.qty)+'</span><button class="link" data-act="'+(home?'need':'have')+'" data-a="'+i.key+'">'+(home?'Need it':'At home')+'</button></div></div>';
 }
 function renderShop(){
   var L=computeList(),v=$('view-shop');
   if(!L.meals){
-    v.innerHTML='<div class="empty-view"><h2>Nothing planned yet</h2><p>Put recipes on the week and the ingredients show up here, merged and counted for '+ppl(st.portions)+'.</p><button class="btn primary" data-act="tab" data-a="week">Plan the week</button></div>';return;
+    v.innerHTML='<div class="empty-view"><h2>Nothing planned yet</h2><p>Put recipes on the week and the ingredients show up here, merged and counted for '+ppl(st.portions)+'.</p><button class="btn primary" data-act="tab" data-a="week">Plan the week</button></div>'+offersPanel(null);return;
   }
   var ticked=L.buy.filter(function(i){return st.done[i.key]}).length,total=L.buy.length;
   var html='<div class="panel summary"><b>'+(total-ticked)+' to buy</b><p>'+L.meals+(L.meals===1?' meal':' meals')+' for '+ppl(st.portions)+' &middot; '+ticked+' of '+total+' in the basket</p><div class="bar" aria-hidden="true"><i style="width:'+(total?Math.round(ticked/total*100):0)+'%"></i></div>'
-    +'<div class="row"><button class="btn" data-act="copy">Copy list</button><button class="btn" data-act="untick"'+(ticked?'':' disabled')+'>Untick all</button></div></div>';
+    +'<div class="row"><button class="btn" data-act="copy">Copy list</button><button class="btn" data-act="untick"'+(ticked?'':' disabled')+'>Untick all</button></div></div>'+offersPanel(L);
   AISLES.forEach(function(a){
     var its=L.buy.filter(function(i){return i.aisle===a});if(!its.length)return;
     its.sort(function(x,y){return (st.done[x.key]?1:0)-(st.done[y.key]?1:0)});
@@ -355,7 +366,7 @@ function paintRecipe(keep){
   +'<div class="row" style="margin-top:14px"><button class="btn'+(liked?'':' primary')+'" data-act="like" data-a="'+r.id+'">'+(liked?'Remove from matches':'Keep this recipe')+'</button>'
   +'<button class="btn" data-act="photoadd" data-a="'+r.id+'">'+(photos[r.id]?'Replace photo':'Add your photo')+'</button>'+(photos[r.id]?'<button class="btn" data-act="photodel" data-a="'+r.id+'">Remove photo</button>':'')+'</div>'
   +'<div class="sheet-sec"><h3>Put it on the week</h3>'+mealChips+'<div class="days">'+dayBtns+'</div></div>'
-  +'<div class="sheet-sec"><h3>Ingredients</h3><ul class="ing">'+r.ings.map(function(p){return '<li><span>'+esc(ING[p[0]][0])+'</span><span>'+esc(recQty(p[0],p[1]))+'</span></li>'}).join('')+'</ul></div>'
+  +'<div class="sheet-sec"><h3>Ingredients</h3><ul class="ing">'+r.ings.map(function(p){return '<li><span>'+esc(ING[p[0]][0])+offerLine(p[0])+'</span><span>'+esc(recQty(p[0],p[1]))+'</span></li>'}).join('')+'</ul></div>'
   +'<div class="sheet-sec"><h3>Method</h3><ol class="steps">'+r.steps.map(function(s){return '<li><span>'+esc(s)+'</span></li>'}).join('')+'</ol></div>'
   +(r.mine?'<div class="row" style="margin-top:20px"><button class="btn" data-act="editrecipe" data-a="'+r.id+'">Edit this recipe</button></div><p class="note">Your own recipe. Amounts are scaled from the servings you entered to the number of people you set at the top.</p>'
     :r.online?'<p class="note">Recipe and photo from <a href="'+esc(r.link)+'" target="_blank" rel="noopener">TheMealDB</a>'+(r.source?' (<a href="'+esc(r.source)+'" target="_blank" rel="noopener">original source</a>)':'')+'. TheMealDB gives no servings, so amounts assume '+ONLINE_SERVINGS+' and are scaled to the number of people you set at the top; measures are converted to metric. Diet labels are worked out from the ingredient names, so check packaging if an allergy matters. Salt, pepper and water are not listed.</p>'
@@ -504,6 +515,161 @@ function restoreBackup(){
   history=[];rebuildRecipes();closeSheet();renderAll();toast('Backup restored');
 }
 
+/* ---------- stores & offers ---------- */
+function offerAt(o,s){return o.storeId?o.storeId===s.id:o.chain===s.chain}
+function storeLabel(o){
+  if(!o.storeId)return o.chain;
+  var s=st.stores.filter(function(x){return x.id===o.storeId})[0];
+  return s?s.name:(o.storeName||o.chain);
+}
+/* Offers that count: still valid today, and at one of your stores (any store until you've picked some). */
+function liveOffers(){
+  var today=todayISO();
+  return st.offers.filter(function(o){return isActive(o,today)&&(!st.stores.length||st.stores.some(function(s){return offerAt(o,s)}))});
+}
+function ingNames(k){return [ING[k][0]]}
+/* The ingredient an offer is for: the one you linked, or worked out from the product name. */
+function offerItem(o){
+  if(o.item)return o.item;
+  var c=o.id+'|'+o.product;
+  if(itemCache[c]===undefined)itemCache[c]=matchItem(o.product,Object.keys(ING),ingNames);
+  return itemCache[c];
+}
+/* ingredient key -> live offers, cheapest first. Recomputed on every render. */
+function computeSale(){
+  var by={};
+  liveOffers().forEach(function(o){var k=offerItem(o);if(k&&ING[k])(by[k]=by[k]||[]).push(o)});
+  Object.keys(by).forEach(function(k){by[k].sort(function(a,b){return a.price-b.price})});
+  saleBy=by;
+}
+function saleCount(r){var n=0;r.ings.forEach(function(p){if(saleBy[p[0]])n++});return n}
+function offerText(o){
+  var dates=o.validFrom&&o.validFrom!==o.validTo?shortDate(o.validFrom)+'–'+shortDate(o.validTo):shortDate(o.validTo);
+  return 'On offer at '+storeLabel(o)+' until '+shortDate(o.validTo)+' · valid '+dates+' · '+kr(o.price)
+    +(o.unitPrice?' ('+kr(o.unitPrice)+'/'+o.unitPriceUnit+')':'')+(o.memberOnly?' · Member price':'');
+}
+function offerLine(key){
+  var os=saleBy[key];if(!os)return '';
+  return '<small class="offer'+(os[0].memberOnly?' member':'')+'">'+esc(offerText(os[0]))+(os.length>1?' · +'+(os.length-1)+' more':'')+'</small>';
+}
+/* Which of your stores suits this list best. Only offers are known, not regular prices, so this ranks stores
+   by how much the offers save (when you entered the regular price) and then by how many list items are on offer. */
+function bestStores(L){
+  var stores=st.stores.length?st.stores:CHAINS.map(function(c){return {id:'chain:'+c,chain:c,name:c}});
+  return stores.map(function(s){
+    var n=0,save=0;
+    L.buy.forEach(function(i){
+      var o=(saleBy[i.key]||[]).filter(function(x){return offerAt(x,s)})[0];
+      if(o){n++;if(o.regularPrice>o.price)save+=o.regularPrice-o.price}
+    });
+    return {store:s,n:n,save:save};
+  }).filter(function(x){return x.n}).sort(function(a,b){return b.save-a.save||b.n-a.n});
+}
+function offersPanel(L){
+  var live=liveOffers(),best=L?bestStores(L):[],h='<div class="panel"><p class="h-label">Offers</p>';
+  if(best.length){
+    var b=best[0];
+    h+='<p class="best"><b>Best for this list: '+esc(b.store.name)+'</b><br>'+b.n+(b.n===1?' item':' items')+' on offer'+(b.save?' · save about '+kr(b.save):'')+'</p>'
+      +(best.length>1?'<p class="note" style="margin:4px 0 0">Next: '+best.slice(1,3).map(function(x){return esc(x.store.name)+' ('+x.n+(x.save?', save '+kr(x.save):'')+')'}).join(', ')+'</p>':'')
+      +'<p class="note" style="margin:6px 0 12px">Based on the offers you have. Regular prices aren\'t known, so items without an offer aren\'t compared.</p>';
+  }else{
+    h+='<p class="muted-p">'+(!st.stores.length?'Pick your stores once, then add offers you spot in the flyer or the store\'s app. They show up next to the items they match.'
+      :live.length?'None of your current offers match this list.':'No current offers. Add the ones you spot in the flyer or the store\'s app.')+'</p>';
+  }
+  return h+'<div class="row"><button class="btn primary" data-act="offeradd">Add offer</button><button class="btn" data-act="offers">Offers ('+live.length+')</button>'
+    +'<button class="btn" data-act="stores">'+(st.stores.length?'My stores ('+st.stores.length+')':'Choose stores')+'</button></div></div>';
+}
+
+/* stores sheet */
+var storeResults=null,storeBusy=false,storeWhere='';
+function storeRow(s,chosen){
+  return '<div class="pick store-row"><span class="chain-dot" aria-hidden="true">'+esc(s.chain==='City Gross'?'CG':s.chain.slice(0,2))+'</span><span class="slot-txt"><b>'+esc(s.name)+'</b><em>'+esc(s.address||s.chain)+(!chosen&&s.dist!=null?' · '+s.dist.toFixed(1)+' km':'')+'</em></span>'
+    +'<button class="btn" data-act="'+(chosen?'storedel':'storeadd')+'" data-a="'+esc(s.id)+'">'+(chosen?'Remove':'Add')+'</button></div>';
+}
+function paintStores(keep){
+  var top=panel.scrollTop;
+  var found=storeResults?storeResults.filter(function(s){return !st.stores.some(function(c){return c.id===s.id})}).slice(0,40):[];
+  sheetState={type:'stores'};
+  openSheet('<h2 class="sheet-title" style="margin-top:18px">My stores</h2><p style="color:var(--muted)">Pick the stores you shop at. You only need to do this once; offers are matched to these.</p>'
+    +(st.stores.length?'<div class="sheet-sec"><h3>Chosen ('+st.stores.length+')</h3>'+st.stores.map(function(s){return storeRow(s,true)}).join('')+'</div>':'')
+    +'<form id="storeForm" class="form sheet-sec" novalidate><h3>Find stores near you</h3><div class="field-row"><label class="field"><span>Postcode</span><input name="pc" inputmode="numeric" maxlength="6" placeholder="123 45" value="'+esc(st.postcode||'')+'"></label>'
+    +'<div class="field" style="align-self:end"><button type="submit" class="btn primary"'+(storeBusy?' disabled':'')+'>Search</button></div></div>'
+    +'<button type="button" class="btn" data-act="storeslocate" style="margin-top:10px"'+(storeBusy?' disabled':'')+'>Use my location instead</button></form>'
+    +(storeBusy?'<p style="color:var(--muted)">Searching…</p>':storeResults?'<div class="sheet-sec"><h3>Near '+esc(storeWhere)+'</h3>'+(found.map(function(s){return storeRow(s,false)}).join('')||'<p style="color:var(--muted)">No other ICA, Willys, Lidl, Coop, Hemköp or City Gross stores found nearby.</p>')+'</div>':'')
+    +'<p class="note">Store locations © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>. A missing store may just not be mapped yet.</p>','My stores');
+  if(keep)panel.scrollTop=top;
+}
+function findStores(where){
+  storeBusy=true;paintStores(true);
+  where.then(function(p){storeWhere=p.label;return storesNear(p.lat,p.lon,5).then(function(r){return r.length>=3?r:storesNear(p.lat,p.lon,15)})})
+    .then(function(r){storeResults=r;storeBusy=false;if(sheetState&&sheetState.type==='stores')paintStores(true)})
+    .catch(function(e){storeBusy=false;toast(e&&e.message||'Store search failed');if(sheetState&&sheetState.type==='stores')paintStores(true)});
+}
+
+/* offers sheet */
+var offerDelArmed=null;
+function paintOffers(keep){
+  var top=panel.scrollTop,today=todayISO();
+  var list=st.offers.slice().sort(function(a,b){return (isActive(b,today)?1:0)-(isActive(a,today)?1:0)||String(a.validTo).localeCompare(String(b.validTo))});
+  sheetState={type:'offers'};
+  openSheet('<h2 class="sheet-title" style="margin-top:18px">Offers</h2><div class="row" style="margin:8px 0 4px"><button class="btn primary" data-act="offeradd">Add offer</button></div>'
+    +(list.length?list.map(function(o){
+      var on=isActive(o,today),k=offerItem(o),past=o.validTo&&o.validTo<today;
+      return '<div class="offer-row'+(on?'':' off')+'"><div class="slot-txt"><b>'+esc(o.product)+'</b><em>'+esc(storeLabel(o))+' · '+kr(o.price)+(o.unitPrice?' ('+kr(o.unitPrice)+'/'+esc(o.unitPriceUnit)+')':'')+(o.regularPrice?' · ord. '+kr(o.regularPrice):'')+'</em>'
+        +'<em>'+(past?'Ended ':on?'Valid ':'Starts ')+esc(o.validFrom&&!past?shortDate(o.validFrom)+'–':'')+esc(shortDate(o.validTo))+(o.memberOnly?' · <span class="member-tag">Member price</span>':'')+(k&&ING[k]?' · for '+esc(ING[k][0]):' · not matched to an item')+'</em></div>'
+        +'<button class="btn" data-act="offerdel" data-a="'+esc(o.id)+'">'+(offerDelArmed===o.id?'Sure?':'Delete')+'</button></div>';
+    }).join(''):'<p style="color:var(--muted)">No offers yet.</p>')
+    +'<p class="note">Offers you add are saved on this device. Ones that ended over a month ago are removed automatically.</p>','Offers');
+  if(keep)panel.scrollTop=top;
+}
+function openOfferForm(){
+  var L=computeList(),listKeys=L.buy.concat(L.home).map(function(i){return i.key});
+  var other=Object.keys(ING).filter(function(k){return k.indexOf(':')<0&&listKeys.indexOf(k)<0}).sort(function(a,b){return ING[a][0].localeCompare(ING[b][0])});
+  var stores=st.stores.map(function(s){return '<option value="'+esc(s.id)+'">'+esc(s.name)+'</option>'}).join('');
+  var chains=(st.stores.length?CHAINS.filter(function(c){return st.stores.some(function(s){return s.chain===c})}):CHAINS).map(function(c){return '<option value="chain:'+esc(c)+'">Every '+esc(c)+' store</option>'}).join('');
+  sheetState={type:'offerform'};
+  openSheet('<form id="offerForm" class="form" novalidate><h2 class="sheet-title" style="margin-top:18px">Add offer</h2>'
+    +'<label class="field"><span>Store</span><select name="store">'+stores+chains+'</select></label>'
+    +'<label class="field"><span>Product, as in the flyer</span><input name="product" id="offerProduct" maxlength="80" placeholder="Kycklingfilé 900 g"></label>'
+    +'<label class="field"><span>For this item on your list</span><select name="item" id="offerItem"><option value="">Work it out from the product name</option>'
+    +(listKeys.length?'<optgroup label="On your shopping list">'+listKeys.map(function(k){return '<option value="'+esc(k)+'">'+esc(ING[k][0])+'</option>'}).join('')+'</optgroup>':'')
+    +'<optgroup label="Other ingredients">'+other.map(function(k){return '<option value="'+esc(k)+'">'+esc(ING[k][0])+'</option>'}).join('')+'</optgroup></select></label>'
+    +'<div class="field-row"><label class="field"><span>Offer price (kr)</span><input name="price" type="number" inputmode="decimal" step="0.01" min="0"></label>'
+    +'<label class="field"><span>Regular price (optional)</span><input name="regular" type="number" inputmode="decimal" step="0.01" min="0"></label></div>'
+    +'<div class="field-row"><label class="field"><span>Unit price (kr, optional)</span><input name="unit" type="number" inputmode="decimal" step="0.01" min="0"></label>'
+    +'<label class="field"><span>per</span><select name="per"><option value="kg">kg</option><option value="l">litre</option><option value="st">piece</option></select></label></div>'
+    +'<div class="field-row"><label class="field"><span>Valid from</span><input name="from" type="date" value="'+todayISO()+'"></label><label class="field"><span>Valid to</span><input name="to" type="date" value="'+thisSunday()+'"></label></div>'
+    +'<label class="check-row"><input type="checkbox" name="member"> Member price (ICA Stammis, Willys Plus, Coop medlem, Lidl Plus, Hemköp or City Gross Klubb)</label>'
+    +'<div class="row" style="margin-top:16px"><button type="submit" class="btn primary">Save offer</button><button type="button" class="btn" data-act="offers">Cancel</button></div></form>','Add offer');
+}
+function saveOfferForm(f){
+  var E=f.elements,num=function(x){var v=parseFloat(String(x.value).replace(',','.'));return v>0?v:null};
+  var product=E.product.value.trim(),price=num(E.price),store=E.store.value,from=E.from.value,to=E.to.value;
+  if(!product){toast('Write the product name');E.product.focus();return}
+  if(!price){toast('Enter the offer price');E.price.focus();return}
+  if(!to){toast('Enter the last day of the offer');return}
+  if(from&&from>to){toast('The offer ends before it starts');return}
+  var s=store.indexOf('chain:')===0?null:st.stores.filter(function(x){return x.id===store})[0];
+  st.offers.push({id:'o-'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36),chain:s?s.chain:store.slice(6),storeId:s?s.id:'',storeName:s?s.name:'',
+    product:product,price:price,unitPrice:num(E.unit),unitPriceUnit:E.per.value,regularPrice:num(E.regular),validFrom:from||'',validTo:to,memberOnly:E.member.checked,item:E.item.value,source:'manual'});
+  save();renderAll();paintOffers();toast('Offer saved');
+}
+document.addEventListener('submit',function(e){
+  if(e.target.id==='offerForm'){e.preventDefault();saveOfferForm(e.target)}
+  else if(e.target.id==='storeForm'){
+    e.preventDefault();var pc=e.target.elements.pc.value.trim();st.postcode=pc;save();
+    findStores(geocodePostcode(pc));
+  }
+});
+document.addEventListener('input',function(e){
+  /* Suggest the list item from the product name as you type, unless you picked one yourself. */
+  if(e.target.id!=='offerProduct')return;
+  var sel=$('offerItem');if(!sel||sel.dataset.manual)return;
+  var keys=Array.prototype.map.call(sel.options,function(o){return o.value}).filter(Boolean);
+  sel.value=matchItem(e.target.value,keys,ingNames)||'';
+});
+document.addEventListener('change',function(e){if(e.target.id==='offerItem')e.target.dataset.manual='1'});
+
 /* ---------- render all ---------- */
 function renderHeader(){
   $('pLabel').textContent=ppl(st.portions);$('pMinus').disabled=st.portions<=1;$('pPlus').disabled=st.portions>=5;
@@ -518,7 +684,7 @@ function renderTabs(){
 function renderAll(){
   var ae=document.activeElement,sel=null;
   if(ae&&ae.dataset&&ae.dataset.act&&!sheet.contains(ae))sel='[data-act="'+ae.dataset.act+'"]'+(ae.dataset.a!==undefined?'[data-a="'+ae.dataset.a+'"]':'')+(ae.dataset.b!==undefined?'[data-b="'+ae.dataset.b+'"]':'');
-  renderHeader();renderDiscover();renderWeek();renderShop();renderMine();renderTabs();
+  computeSale();renderHeader();renderDiscover();renderWeek();renderShop();renderMine();renderTabs();
   if(sel){try{var el=document.querySelector('main '+sel+':not(:disabled)')||document.querySelector(sel+':not(:disabled)');if(el)el.focus({preventScroll:true})}catch(e){}}
 }
 var tab='discover';
@@ -601,6 +767,20 @@ document.addEventListener('click',function(e){
     case 'restore':restoreBackup();break;
     case 'onlinetoggle':st.online=!st.online;save();rebuildRecipes();renderAll();if(st.online)refreshOnline(false);break;
     case 'onlinerefresh':refreshOnline(true);break;
+    case 'saleonly':st.saleOnly=!st.saleOnly;save();renderAll();break;
+    case 'stores':paintStores();break;
+    case 'storeslocate':findStores(currentPosition());break;
+    case 'storeadd':
+      var sf=(storeResults||[]).filter(function(s){return s.id===a})[0];
+      if(sf&&!st.stores.some(function(s){return s.id===a})){st.stores.push({id:sf.id,chain:sf.chain,name:sf.name,address:sf.address,lat:sf.lat,lon:sf.lon});save();renderAll();paintStores(true)}
+      break;
+    case 'storedel':st.stores=st.stores.filter(function(s){return s.id!==a});save();renderAll();paintStores(true);break;
+    case 'offers':offerDelArmed=null;paintOffers();break;
+    case 'offeradd':openOfferForm();break;
+    case 'offerdel':
+      if(offerDelArmed!==a){offerDelArmed=a;paintOffers(true)}
+      else{offerDelArmed=null;st.offers=st.offers.filter(function(o){return o.id!==a});save();renderAll();paintOffers(true);toast('Offer deleted')}
+      break;
   }
 });
 document.addEventListener('keydown',function(e){

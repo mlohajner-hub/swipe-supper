@@ -1,0 +1,43 @@
+name: Store list
+
+# Rebuilds public/stores.json from OpenStreetMap once a month and rebuilds the app with it.
+# The monthly commit also counts as repository activity, so GitHub doesn't pause scheduled workflows.
+on:
+  schedule:
+    - cron: '17 4 2 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  stores:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Build store list
+        run: node scripts/build-stores.mjs
+      - name: Commit if changed
+        id: commit
+        run: |
+          if git diff --quiet -- public/stores.json && git ls-files --error-unmatch public/stores.json >/dev/null 2>&1; then
+            echo "No changes"; echo "changed=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/stores.json
+          git commit -m "Update store list from OpenStreetMap"
+          git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+      # Pushes made with the workflow token don't start other workflows, so start the app builds explicitly.
+      - name: Rebuild app
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run build.yml --ref main
+          gh workflow run pages.yml --ref main

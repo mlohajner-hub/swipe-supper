@@ -9,3 +9,4 @@ dev-dist/
 android/app/release/
 signing/
 .claude/settings.local.json
+private/
