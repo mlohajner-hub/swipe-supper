@@ -8,7 +8,7 @@ Swipe recipes, plan the week, and get one merged shopping list grouped by store 
 
 ## Install the APK on your phone
 
-1. On your phone, open the repo's **Actions** tab on github.com (signed in), tap the latest green **Build** run.
+1. On your phone, open the repo's **Actions** tab on github.com (signed in), tap the latest green **Android APK** run.
 2. Under **Artifacts**, download `swipe-supper-apk-<number>`. It arrives as a `.zip`.
 3. Open the zip in the **Files** app and tap the `.apk` inside.
 4. If Android asks, allow **Install unknown apps** for Files (or your browser), then tap **Install**.
