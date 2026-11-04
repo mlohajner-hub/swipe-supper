@@ -631,7 +631,7 @@ function openOfferForm(){
   openSheet('<form id="offerForm" class="form" novalidate><h2 class="sheet-title" style="margin-top:18px">Add offer</h2>'
     +'<label class="field"><span>Store</span><select name="store">'+stores+chains+'</select></label>'
     +'<label class="field"><span>Product, as in the flyer</span><input name="product" id="offerProduct" maxlength="80" placeholder="Kycklingfilé 900 g"></label>'
-    +'<label class="field"><span>For this item on your list</span><select name="item" id="offerItem"><option value="">Work it out from the product name</option>'
+    +'<label class="field"><span>For this item on your list</span><select name="foritem" id="offerItem"><option value="">Work it out from the product name</option>'
     +(listKeys.length?'<optgroup label="On your shopping list">'+listKeys.map(function(k){return '<option value="'+esc(k)+'">'+esc(ING[k][0])+'</option>'}).join('')+'</optgroup>':'')
     +'<optgroup label="Other ingredients">'+other.map(function(k){return '<option value="'+esc(k)+'">'+esc(ING[k][0])+'</option>'}).join('')+'</optgroup></select></label>'
     +'<div class="field-row"><label class="field"><span>Offer price (kr)</span><input name="price" type="number" inputmode="decimal" step="0.01" min="0"></label>'
@@ -651,7 +651,7 @@ function saveOfferForm(f){
   if(from&&from>to){toast('The offer ends before it starts');return}
   var s=store.indexOf('chain:')===0?null:st.stores.filter(function(x){return x.id===store})[0];
   st.offers.push({id:'o-'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36),chain:s?s.chain:store.slice(6),storeId:s?s.id:'',storeName:s?s.name:'',
-    product:product,price:price,unitPrice:num(E.unit),unitPriceUnit:E.per.value,regularPrice:num(E.regular),validFrom:from||'',validTo:to,memberOnly:E.member.checked,item:E.item.value,source:'manual'});
+    product:product,price:price,unitPrice:num(E.unit),unitPriceUnit:E.per.value,regularPrice:num(E.regular),validFrom:from||'',validTo:to,memberOnly:E.member.checked,item:E.foritem.value,source:'manual'});
   save();renderAll();paintOffers();toast('Offer saved');
 }
 document.addEventListener('submit',function(e){
