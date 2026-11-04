@@ -4,6 +4,7 @@ Swipe recipes, plan the week, and get one merged shopping list grouped by store 
 
 - **Android app:** every push builds a debug APK in GitHub Actions (no Android Studio needed).
 - **Web app / PWA:** published to GitHub Pages from `main`; open it in Chrome and choose *Install app*.
+- **Online recipes:** about 620 recipes with photos from [TheMealDB](https://www.themealdb.com) are downloaded once and kept on the device, mixed into the deck alongside the 36 starters and your own recipes. Turn them off under *My recipes*.
 - Everything you save (kept recipes, week plan, list, your own recipes, photos) stays on the device. Use **My recipes → Save backup** to keep a copy.
 
 ## Install the APK on your phone
@@ -25,7 +26,8 @@ npm run android:sync # copy the web build into the Android project
 
 - `src/data.js` – ingredient catalogue and starter recipes
 - `src/main.js` – the app (deck, week, shopping list, my recipes, backup)
-- `src/photos.js` – photo storage (IndexedDB)
+- `src/mealdb.js` – TheMealDB download and conversion (metric amounts, store sections, diet flags)
+- `src/photos.js` – photo storage and cached data (IndexedDB)
 - `src/backup.js` – backup file save/restore
 - `scripts/make-icons.mjs` – renders all icons from `assets/icon.svg`; then `npx capacitor-assets generate --android`
 - `legacy/swipe-supper.html` – the original single-file version
@@ -33,3 +35,7 @@ npm run android:sync # copy the web build into the Android project
 ## Signing
 
 CI signs debug APKs with one fixed key from the repository secrets `DEBUG_KEYSTORE_B64` and `DEBUG_KEYSTORE_PASSWORD`, so updates install over each other. The key is kept locally in `signing/` (git-ignored). Back that folder up: if the key is lost, the next APK can only be installed after uninstalling, which deletes the app's data.
+
+## TheMealDB key
+
+The app uses TheMealDB's free test key `1`, which TheMealDB allows for development and personal/educational use. Releasing on an app store requires their supporter key. To use one, add it as the repository secret `MEALDB_KEY` (CI builds pick it up) or put `VITE_MEALDB_KEY=...` in a local `.env` (git-ignored). Keys are never committed.

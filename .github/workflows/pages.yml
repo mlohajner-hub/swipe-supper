@@ -25,6 +25,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          VITE_MEALDB_KEY: ${{ secrets.MEALDB_KEY }}   # optional TheMealDB supporter key; the free test key is used without it
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

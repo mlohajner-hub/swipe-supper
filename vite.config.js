@@ -29,7 +29,13 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
-        cleanupOutdatedCaches: true
+        cleanupOutdatedCaches: true,
+        // Recipe photos from TheMealDB stay available offline once seen.
+        runtimeCaching: [{
+          urlPattern: /^https:\/\/www\.themealdb\.com\/images\//,
+          handler: 'CacheFirst',
+          options: {cacheName: 'mealdb-images', expiration: {maxEntries: 500, maxAgeSeconds: 60 * 60 * 24 * 90}, cacheableResponse: {statuses: [0, 200]}}
+        }]
       }
     })
   ]

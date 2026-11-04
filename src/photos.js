@@ -1,20 +1,25 @@
 /* Recipe photos live in IndexedDB: localStorage caps out at ~5 MB, which is only a couple of dozen photos.
-   Photos are kept as JPEG data URLs keyed by recipe id. */
-const DB='swipe-supper',STORE='photos',OLD_PREFIX='ss.p.';
+   Photos are kept as JPEG data URLs keyed by recipe id. The same database also holds bigger cached data
+   (the online recipe catalogue) in a key/value store. */
+const DB='swipe-supper',STORE='photos',KV='cache',OLD_PREFIX='ss.p.';
 let dbp=null;
 function open(){
   if(dbp)return dbp;
   dbp=new Promise(function(res,rej){
-    const rq=indexedDB.open(DB,1);
-    rq.onupgradeneeded=function(){rq.result.createObjectStore(STORE)};
+    const rq=indexedDB.open(DB,2);
+    rq.onupgradeneeded=function(){
+      const db=rq.result;
+      if(!db.objectStoreNames.contains(STORE))db.createObjectStore(STORE);
+      if(!db.objectStoreNames.contains(KV))db.createObjectStore(KV);
+    };
     rq.onsuccess=function(){res(rq.result)};
     rq.onerror=function(){rej(rq.error)};
   });
   return dbp;
 }
-function tx(mode,fn){
+function tx(mode,fn,store){
   return open().then(function(db){return new Promise(function(res,rej){
-    const t=db.transaction(STORE,mode),out=fn(t.objectStore(STORE));
+    const t=db.transaction(store||STORE,mode),out=fn(t.objectStore(store||STORE));
     t.oncomplete=function(){res(out&&'result' in out?out.result:undefined)};
     t.onerror=t.onabort=function(){rej(t.error)};
   })});
@@ -22,6 +27,8 @@ function tx(mode,fn){
 export function putPhoto(id,url){return tx('readwrite',function(s){return s.put(url,id)})}
 export function deletePhoto(id){return tx('readwrite',function(s){return s.delete(id)})}
 export function clearPhotos(){return tx('readwrite',function(s){return s.clear()})}
+export function getCached(key){return tx('readonly',function(s){return s.get(key)},KV).catch(function(){return undefined})}
+export function putCached(key,value){return tx('readwrite',function(s){return s.put(value,key)},KV)}
 
 /* All photos as {id: dataUrl}. Moves any photos saved by the old single-file version out of localStorage first. */
 export function loadPhotos(){

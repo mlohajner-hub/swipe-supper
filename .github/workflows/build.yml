@@ -21,6 +21,8 @@ jobs:
 
       - run: npm ci
       - run: npm run build
+        env:
+          VITE_MEALDB_KEY: ${{ secrets.MEALDB_KEY }}   # optional TheMealDB supporter key; the free test key is used without it
       - run: npx cap sync android
 
       - uses: actions/setup-java@v5

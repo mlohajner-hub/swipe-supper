@@ -1,12 +1,13 @@
 import './styles.css';
 import {Capacitor} from '@capacitor/core';
 import {aP,aM,aD,aB,aK,aF,aS,AISLES,ING,STAPLES,RAW,MEALS,MEAL_LABEL,MEAL_ORDER,DAYS,DAYS_LONG,TAGS,DIETS,UNITS,AISLE_COLOUR} from './data.js';
-import {loadPhotos,putPhoto,deletePhoto,clearPhotos} from './photos.js';
+import {loadPhotos,putPhoto,deletePhoto,clearPhotos,getCached,putCached} from './photos.js';
 import {saveBackup,readBackup,BACKUP_APP} from './backup.js';
+import {fetchAllMeals,convertMeal,SERVINGS as ONLINE_SERVINGS} from './mealdb.js';
 
 /* ---------- recipes ---------- */
-/* A recipe definition: built-in rows from RAW, or the user's own recipes from st.custom.
-   Both become the same runtime shape, so the deck, planner and shopping list treat them alike. */
+/* A recipe definition: built-in rows from RAW, online recipes from TheMealDB, or the user's own recipes from st.custom.
+   All become the same runtime shape, so the deck, planner and shopping list treat them alike. */
 var STYLE_TAGS=TAGS.filter(function(t){return t!=='All'&&t!=='Mine'&&t!=='Quick'});
 function slug(s){return String(s).toLowerCase().trim().replace(/\s+/g,' ')}
 var KNOWN={};Object.keys(ING).forEach(function(k){KNOWN[slug(ING[k][0])]=k});
@@ -23,7 +24,7 @@ function buildRecipe(id,name,meals,time,tags,ings,steps,mine,userDiet){
   var flags={};
   ings.forEach(function(p){(ING[p[0]][3]||'').split(' ').forEach(function(f){if(f)flags[f]=1})});
   var animal=flags.dairy||flags.egg||flags.animal;
-  tags=tags.slice();if(time<=25)tags.unshift('Quick');if(mine)tags.unshift('Mine');
+  tags=tags.slice();if(time&&time<=25)tags.unshift('Quick');if(mine)tags.unshift('Mine');
   var diet={'Vegetarian':!flags.meat&&!flags.fish,'Vegan':!flags.meat&&!flags.fish&&!animal,'Pescatarian':!flags.meat,'Gluten-free':!flags.gluten,'Dairy-free':!flags.dairy,'Nut-free':!flags.nuts};
   /* Own recipes: a diet only counts if you ticked it AND no known ingredient contradicts it. */
   if(mine)DIETS.forEach(function(d){diet[d]=!!(userDiet&&userDiet[d])&&diet[d]});
@@ -36,17 +37,43 @@ function customRecipe(c){
   var ings=c.ings.filter(function(it){return it.name&&it.amt>0}).map(function(it){var x=ingKey(it);return [x.key,x.amt*per2]});
   return buildRecipe(c.id,c.name,c.meals.length?c.meals:['dinner'],c.time||30,c.tags||[],ings,c.steps||[],true,c.diet);
 }
+/* Online recipes have no cooking time (TheMealDB doesn't give one), so they never count as Quick. */
+function onlineRecipe(m){
+  var d=convertMeal(m),r=buildRecipe(d.id,d.name,d.meals,null,d.tags,d.ings,d.steps,false);
+  r.online=true;r.image=d.image;r.source=d.source;r.link=d.link;
+  return r;
+}
+var ONLINE=[],onlineAt=0,onlineBusy=false;
 var RECIPES=[],BYID={};
+/* Planned or kept online recipes stay findable (BYID) even when online recipes are switched off for the deck. */
 function rebuildRecipes(){
-  RECIPES=BUILTIN.concat(st.custom.map(customRecipe));
-  BYID={};RECIPES.forEach(function(r){BYID[r.id]=r});
+  var mine=st.custom.map(customRecipe);
+  RECIPES=BUILTIN.concat(st.online?ONLINE:[],mine);
+  BYID={};BUILTIN.concat(ONLINE,mine).forEach(function(r){BYID[r.id]=r});
   plateCache={};
+}
+function setOnline(meals,at){
+  ONLINE=[];meals.forEach(function(m){try{ONLINE.push(onlineRecipe(m))}catch(e){}});
+  onlineAt=at||0;rebuildRecipes();
+}
+/* Fetches the catalogue when there is none yet, or when it is a week old. Manual refresh always fetches. */
+function refreshOnline(manual){
+  if(onlineBusy||!st.online)return;
+  if(!manual&&onlineAt&&Date.now()-onlineAt<7*86400000)return;
+  if(!navigator.onLine){if(manual)toast('You are offline');return}
+  onlineBusy=true;if(manual)renderMine();
+  fetchAllMeals().then(function(meals){
+    var at=Date.now(),had=ONLINE.length;
+    putCached('mealdb',{at:at,meals:meals}).catch(function(){});
+    setOnline(meals,at);onlineBusy=false;renderAll();
+    if(manual||!had)toast(ONLINE.length+' online recipes ready');
+  }).catch(function(){onlineBusy=false;renderMine();if(manual)toast('Could not reach TheMealDB')});
 }
 
 /* ---------- state ---------- */
 /* Everything is saved on this device only (localStorage; photos in IndexedDB). Use the backup file to move or keep it. */
 var KEY='swipe-supper.v1';
-function defaults(){return {portions:2,meals:{breakfast:false,lunch:false,dinner:true},mealFilter:'dinner',tag:'All',diet:[],liked:[],skipped:[],plan:{},have:STAPLES.slice(),done:{},custom:[],seed:Math.floor(Math.random()*1e9),updated:0}}
+function defaults(){return {portions:2,meals:{breakfast:false,lunch:false,dinner:true},mealFilter:'dinner',tag:'All',diet:[],liked:[],skipped:[],plan:{},have:STAPLES.slice(),done:{},custom:[],online:true,seed:Math.floor(Math.random()*1e9),updated:0}}
 function normalise(o){var d=defaults();var s=Object.assign(d,o||{});s.meals=Object.assign(defaults().meals,(o&&o.meals)||{});if(!Array.isArray(s.custom))s.custom=[];return s}
 var st=defaults();
 try{var raw=localStorage.getItem(KEY);if(raw)st=normalise(JSON.parse(raw))}catch(e){}
@@ -66,6 +93,7 @@ function trim1(n){return String(Math.round(n*10)/10)}
 function frac(v){var w=Math.floor(v+1e-9),r=Math.round((v-w)*4)/4,s=r===.25?'¼':r===.5?'½':r===.75?'¾':'';if(r===1){w+=1;s=''}return (w||s?(w||'')+s:'0')}
 function ppl(n){return n+(n===1?' person':' people')}
 function mealText(r){return r.meals.map(function(m){return MEAL_LABEL[m]}).join(' / ')}
+function timeText(r){return r.time?r.time+' min':'Online'}
 function ico(path,size,sw){return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="'+(sw||2.2)+'" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+path+'</svg>'}
 var I={
   keep:'<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
@@ -91,11 +119,17 @@ function plate(r){
     s+='<circle cx="'+(100+Math.cos(a)*d).toFixed(1)+'" cy="'+(100+Math.sin(a)*d).toFixed(1)+'" r="'+(2+rand()*3.5).toFixed(1)+'" fill="'+cols[Math.floor(rand()*cols.length)]+'"/>'}
   return plateCache[r.id]=s+'</svg>';
 }
-function artInner(r){return photos[r.id]?'<img src="'+photos[r.id]+'" alt="'+esc(r.name)+'" draggable="false">':plate(r)}
-function artHtml(r){return '<div class="art" style="--c:'+r.colors[0]+'">'+artInner(r)+'</div>'}
-function thumb(r){return '<span class="thumb" style="--c:'+r.colors[0]+'">'+artInner(r)+'</span>'}
+/* Your own photo wins, then the online photo, then the drawn plate. The plate sits under the online photo
+   and shows through if the photo can't load (offline, or the image is gone). size: TheMealDB variant suffix. */
+function artInner(r,size){
+  if(photos[r.id])return '<img src="'+photos[r.id]+'" alt="'+esc(r.name)+'" draggable="false">';
+  if(r.image)return plate(r)+'<img class="net" src="'+esc(r.image+(size?'/'+size:''))+'" alt="'+esc(r.name)+'" draggable="false" loading="lazy" decoding="async" onerror="this.remove()">';
+  return plate(r);
+}
+function artHtml(r,size){return '<div class="art" style="--c:'+r.colors[0]+'">'+artInner(r,size)+'</div>'}
+function thumb(r){return '<span class="thumb" style="--c:'+r.colors[0]+'">'+artInner(r,'small')+'</span>'}
 function pills(r,max){
-  var out=r.mine?[['Mine',2]]:[];
+  var out=r.mine?[['Mine',2]]:r.online?[['Online',0]]:[];
   if(r.diet.Vegan)out.push(['Vegan',1]);else if(r.diet.Vegetarian)out.push(['Vegetarian',1]);else if(r.fish&&r.diet.Pescatarian)out.push(['Pescatarian',1]);
   if(r.diet['Gluten-free'])out.push(['Gluten-free',1]);
   if(r.diet['Dairy-free'])out.push(['Dairy-free',1]);
@@ -119,9 +153,9 @@ function filtersHtml(){
   +'<div class="chips" role="group" aria-label="Diet"><span class="chip-label">Diet</span>'+DIETS.map(function(d){return '<button class="chip diet" aria-pressed="'+(st.diet.indexOf(d)>-1)+'" data-act="diet" data-a="'+d+'">'+d+'</button>'}).join('')+'</div>';
 }
 function cardHtml(r,pos){
-  return '<article class="card '+(pos===0?'top':'pos'+pos)+'" data-id="'+r.id+'"'+(pos?' aria-hidden="true"':'')+'>'+artHtml(r)
+  return '<article class="card '+(pos===0?'top':'pos'+pos)+'" data-id="'+r.id+'"'+(pos?' aria-hidden="true"':'')+'>'+artHtml(r,'large')
   +'<span class="stamp keep">KEEP</span><span class="stamp skip">SKIP</span>'
-  +'<div class="card-body"><h2>'+esc(r.name)+'</h2><div class="meta"><span>'+mealText(r)+'</span><span>'+r.time+' min</span><span>'+r.ings.length+' ingredients</span></div><div class="pills">'+pills(r,5)+'</div></div></article>';
+  +'<div class="card-body"><h2>'+esc(r.name)+'</h2><div class="meta"><span>'+mealText(r)+'</span><span>'+timeText(r)+'</span><span>'+r.ings.length+' ingredients</span></div><div class="pills">'+pills(r,5)+'</div></div></article>';
 }
 function renderDiscover(){
   var list=deckList(),top=list.slice(0,3),deck;
@@ -194,7 +228,7 @@ function enabledMeals(){return MEAL_ORDER.filter(function(m){return st.meals[m]}
 var clearArmed=false;
 function slotHtml(d,m){
   var id=st.plan[d+'-'+m],r=id&&BYID[id];
-  if(r)return '<div class="slot"><button class="slot-main" data-act="slot" data-a="'+d+'" data-b="'+m+'">'+thumb(r)+'<span class="slot-txt"><small>'+MEAL_LABEL[m]+'</small><b>'+esc(r.name)+'</b><em>'+r.time+' min</em></span></button>'
+  if(r)return '<div class="slot"><button class="slot-main" data-act="slot" data-a="'+d+'" data-b="'+m+'">'+thumb(r)+'<span class="slot-txt"><small>'+MEAL_LABEL[m]+'</small><b>'+esc(r.name)+'</b><em>'+timeText(r)+'</em></span></button>'
     +'<button class="x" data-act="unslot" data-a="'+d+'" data-b="'+m+'" aria-label="Remove '+esc(r.name)+' from '+DAYS_LONG[d]+' '+m+'">'+ico(I.skip,16,2.4)+'</button></div>';
   return '<button class="slot empty" data-act="slot" data-a="'+d+'" data-b="'+m+'"><span class="plus">+</span><span class="slot-txt"><small>'+MEAL_LABEL[m]+'</small><b>Add a recipe</b></span></button>';
 }
@@ -213,7 +247,7 @@ function renderWeek(){
 function openPicker(d,m){
   var cand=RECIPES.filter(function(r){return r.meals.indexOf(m)>-1&&st.diet.every(function(x){return r.diet[x]})});
   var liked=cand.filter(function(r){return st.liked.indexOf(r.id)>-1}),others=cand.filter(function(r){return st.liked.indexOf(r.id)<0});
-  function row(r){return '<button class="pick" data-act="pick" data-a="'+d+'" data-b="'+m+'" data-c="'+r.id+'">'+thumb(r)+'<span class="slot-txt"><b>'+esc(r.name)+'</b><em>'+r.time+' min &middot; '+esc(r.tags.slice(0,2).join(', '))+'</em></span></button>'}
+  function row(r){return '<button class="pick" data-act="pick" data-a="'+d+'" data-b="'+m+'" data-c="'+r.id+'">'+thumb(r)+'<span class="slot-txt"><b>'+esc(r.name)+'</b><em>'+timeText(r)+' &middot; '+esc(r.tags.slice(0,2).join(', '))+'</em></span></button>'}
   sheetState={type:'picker'};
   openSheet('<h2 class="sheet-title" style="margin-top:18px">'+MEAL_LABEL[m]+' &middot; '+DAYS_LONG[d]+'</h2>'
     +(liked.length?'<div class="row" style="margin:8px 0 4px"><button class="btn" data-act="surprise" data-a="'+d+'" data-b="'+m+'">Surprise me from my matches</button></div><div class="sheet-sec"><h3>Your matches</h3>'+liked.map(row).join('')+'</div>':'<p style="color:var(--muted)">You have no kept '+m+' recipes yet. Pick any below, or swipe some first.</p>')
@@ -252,12 +286,14 @@ function computeList(){
 }
 function shopQty(k,total){
   var u=ING[k][1],v;
+  if(!total)return 'some'; /* only "to taste" / "for frying" amounts */
   if(u==='g'||u==='ml'){var step=total<100?5:10;v=Math.ceil(total/step-1e-9)*step;return v>=1000?trim1(v/1000)+(u==='g'?' kg':' l'):v+' '+u}
   if(u==='tbsp'||u==='tsp'){v=Math.ceil(total*2-1e-9)/2;return frac(v)+' '+u}
   v=Math.ceil(total-1e-9);return u==='pcs'?String(v):v+' '+u;
 }
 function recQty(k,a){
   var u=ING[k][1],v=a*st.portions/2;
+  if(!a)return 'to taste';
   if(u==='g'||u==='ml'){v=v<100?Math.round(v/5)*5:Math.round(v/10)*10;if(!v)v=5;return v>=1000?trim1(v/1000)+(u==='g'?' kg':' l'):v+' '+u}
   v=Math.round(v*4)/4;if(!v)v=.25;return frac(v)+(u==='pcs'?'':' '+u);
 }
@@ -314,14 +350,15 @@ function paintRecipe(keep){
   var r=BYID[sheetState.id],meal=sheetState.meal,liked=st.liked.indexOf(r.id)>-1,top=panel.scrollTop;
   var mealChips=r.meals.length>1?'<div class="chips wrap" style="padding:0 0 8px">'+r.meals.map(function(m){return '<button class="chip" aria-pressed="'+(m===meal)+'" data-act="sheetmeal" data-a="'+m+'">'+MEAL_LABEL[m]+'</button>'}).join('')+'</div>':'';
   var dayBtns=DAYS.map(function(x,i){var cur=st.plan[i+'-'+meal];return '<button class="day-btn'+(cur===r.id?' on':(cur?' busy':''))+'" data-act="setplan" data-a="'+i+'" data-b="'+meal+'" data-c="'+r.id+'" aria-label="'+DAYS_LONG[i]+' '+meal+(cur===r.id?', planned':'')+'">'+x+'</button>'}).join('');
-  $('sheetBody').innerHTML='<div class="sheet-art">'+artHtml(r)+'</div><h2 class="sheet-title">'+esc(r.name)+'</h2>'
-  +'<div class="meta"><span>'+mealText(r)+'</span><span>'+r.time+' min</span><span>For '+ppl(st.portions)+'</span></div><div class="pills" style="margin-top:8px">'+pills(r,8)+'</div>'
+  $('sheetBody').innerHTML='<div class="sheet-art">'+artHtml(r,'')+'</div><h2 class="sheet-title">'+esc(r.name)+'</h2>'
+  +'<div class="meta"><span>'+mealText(r)+'</span><span>'+timeText(r)+'</span><span>For '+ppl(st.portions)+'</span></div><div class="pills" style="margin-top:8px">'+pills(r,8)+'</div>'
   +'<div class="row" style="margin-top:14px"><button class="btn'+(liked?'':' primary')+'" data-act="like" data-a="'+r.id+'">'+(liked?'Remove from matches':'Keep this recipe')+'</button>'
   +'<button class="btn" data-act="photoadd" data-a="'+r.id+'">'+(photos[r.id]?'Replace photo':'Add your photo')+'</button>'+(photos[r.id]?'<button class="btn" data-act="photodel" data-a="'+r.id+'">Remove photo</button>':'')+'</div>'
   +'<div class="sheet-sec"><h3>Put it on the week</h3>'+mealChips+'<div class="days">'+dayBtns+'</div></div>'
   +'<div class="sheet-sec"><h3>Ingredients</h3><ul class="ing">'+r.ings.map(function(p){return '<li><span>'+esc(ING[p[0]][0])+'</span><span>'+esc(recQty(p[0],p[1]))+'</span></li>'}).join('')+'</ul></div>'
   +'<div class="sheet-sec"><h3>Method</h3><ol class="steps">'+r.steps.map(function(s){return '<li><span>'+esc(s)+'</span></li>'}).join('')+'</ol></div>'
   +(r.mine?'<div class="row" style="margin-top:20px"><button class="btn" data-act="editrecipe" data-a="'+r.id+'">Edit this recipe</button></div><p class="note">Your own recipe. Amounts are scaled from the servings you entered to the number of people you set at the top.</p>'
+    :r.online?'<p class="note">Recipe and photo from <a href="'+esc(r.link)+'" target="_blank" rel="noopener">TheMealDB</a>'+(r.source?' (<a href="'+esc(r.source)+'" target="_blank" rel="noopener">original source</a>)':'')+'. TheMealDB gives no servings, so amounts assume '+ONLINE_SERVINGS+' and are scaled to the number of people you set at the top; measures are converted to metric. Diet labels are worked out from the ingredient names, so check packaging if an allergy matters. Salt, pepper and water are not listed.</p>'
     :'<p class="note">Starter recipe written by Claude. Amounts are for 2 servings and scaled to the number of people you set at the top. Salt and pepper are not listed.</p>');
   if(keep)panel.scrollTop=top;
 }
@@ -359,6 +396,9 @@ function renderMine(){
     :'<p style="margin:0 0 12px;color:var(--muted)">Recipes you add here show up in the swipe deck with the others, follow the same filters and go on the shopping list.</p>';
   $('view-mine').innerHTML='<div class="panel"><p class="h-label">My recipes ('+mine.length+')</p>'+list
     +'<button class="btn primary wide" style="margin-top:10px" data-act="newrecipe">+ New recipe</button></div>'
+    +'<div class="panel"><p class="h-label">Online recipes</p><p style="margin:0 0 12px;color:var(--muted)">'
+    +(onlineBusy?'Downloading recipes from TheMealDB…':ONLINE.length?ONLINE.length+' recipes with photos from <a href="https://www.themealdb.com" target="_blank" rel="noopener">TheMealDB</a>, kept on this device'+(onlineAt?' (updated '+new Date(onlineAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'})+')':'')+'. '+(st.online?'They are mixed into the swipe deck.':'They are hidden from the deck.'):st.online?'Recipes with photos from TheMealDB download the first time you are online.':'Switched off.')+'</p>'
+    +'<div class="row"><button class="btn" data-act="onlinetoggle">'+(st.online?'Hide from deck':'Show in deck')+'</button>'+(st.online?'<button class="btn" data-act="onlinerefresh"'+(onlineBusy?' disabled':'')+'>Update now</button>':'')+'</div></div>'
     +'<div class="panel"><p class="h-label">Backup</p><p style="margin:0 0 12px;color:var(--muted)">Everything is saved on this device only. Uninstalling the app or clearing its data deletes it, so save a backup now and then.</p>'
     +'<div class="row"><button class="btn" data-act="export">Save backup</button><button class="btn" data-act="import">Restore backup</button></div>'
     +'<p class="note" style="margin-top:10px">'+(st.lastBackup?'Last backup saved '+new Date(st.lastBackup).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})+'.':'No backup saved yet.')+'</p></div>';
@@ -392,7 +432,7 @@ function openEditor(id){
     +'<p class="note" style="margin:0 0 12px">Tick the diets this recipe fits. Ingredients the app knows (like butter or chicken) still rule a diet out.</p>'
     +'<p class="h-label">Ingredients</p><div id="ingRows">'+rows+'</div>'
     +'<button type="button" class="btn" data-act="addingrow" style="margin-top:8px">+ Add ingredient</button>'
-    +'<datalist id="ingNames">'+Object.keys(ING).filter(function(k){return k.indexOf('c:')!==0}).map(function(k){return '<option value="'+esc(ING[k][0])+'">'}).join('')+'</datalist>'
+    +'<datalist id="ingNames">'+Object.keys(ING).filter(function(k){return k.indexOf(':')<0}).map(function(k){return '<option value="'+esc(ING[k][0])+'">'}).join('')+'</datalist>'
     +'<label class="field" style="margin-top:16px"><span>Method, one step per line</span><textarea name="steps" rows="6">'+esc(d.steps.join('\n'))+'</textarea></label>'
     +'<div class="row" style="margin-top:16px"><button type="submit" class="btn primary">Save recipe</button><button type="button" class="btn" data-act="close">Cancel</button>'
     +(c?'<button type="button" class="btn" data-act="delrecipe" data-a="'+c.id+'">Delete</button>':'')+'</div></form>',c?'Edit recipe':'New recipe');
@@ -559,6 +599,8 @@ document.addEventListener('click',function(e){
     case 'export':exportBackup();break;
     case 'import':$('backupInput').click();break;
     case 'restore':restoreBackup();break;
+    case 'onlinetoggle':st.online=!st.online;save();rebuildRecipes();renderAll();if(st.online)refreshOnline(false);break;
+    case 'onlinerefresh':refreshOnline(true);break;
   }
 });
 document.addEventListener('keydown',function(e){
@@ -574,6 +616,12 @@ loadPhotos().then(function(p){
   photos=Object.assign(p,photos);
   if(Object.keys(photos).length){renderAll();if(sheetState&&sheetState.type==='recipe')paintRecipe(true)}
 });
+/* Online recipes: show the copy kept on this device straight away, then fetch if there is none or it's a week old. */
+getCached('mealdb').then(function(d){
+  if(d&&Array.isArray(d.meals)&&d.meals.length){setOnline(d.meals,d.at);renderAll();if(sheetState&&sheetState.type==='recipe')paintRecipe(true)}
+  refreshOnline(false);
+});
+window.addEventListener('online',function(){refreshOnline(false)});
 /* Ask the browser not to evict our data under storage pressure (installed PWAs usually get this). */
 try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(function(){})}catch(e){}
 /* Offline support for the web/PWA version. The Android app ships its files inside the APK and doesn't need it. */
