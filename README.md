@@ -5,6 +5,7 @@ Swipe recipes, plan the week, and get one merged shopping list grouped by store 
 - **Android app:** every push builds a debug APK in GitHub Actions (no Android Studio needed).
 - **Web app / PWA:** published to GitHub Pages from `main`; open it in Chrome and choose *Install app*.
 - **Online recipes:** about 620 recipes with photos from [TheMealDB](https://www.themealdb.com) are downloaded once and kept on the device, mixed into the deck alongside the 36 starters and your own recipes. Turn them off under *My recipes*.
+- **Store offers:** pick your stores once (postcode or location), add offers you spot, and the shopping list shows *on offer at <store> until <date>* with validity dates and member prices. You also get the best store for the list and an *On sale* filter on the deck. No chain data is fetched automatically yet; see PLAN.txt for the data-source research.
 - Everything you save (kept recipes, week plan, list, your own recipes, photos) stays on the device. Use **My recipes → Save backup** to keep a copy.
 
 ## Install the APK on your phone
@@ -27,6 +28,8 @@ npm run android:sync # copy the web build into the Android project
 - `src/data.js` – ingredient catalogue and starter recipes
 - `src/main.js` – the app (deck, week, shopping list, my recipes, backup)
 - `src/mealdb.js` – TheMealDB download and conversion (metric amounts, store sections, diet flags)
+- `src/stores.js` – store picker (OpenStreetMap; list in `public/stores.json`, rebuilt monthly by the *Store list* workflow)
+- `src/offers.js` – offer format, Swedish product-name matching, validity
 - `src/photos.js` – photo storage and cached data (IndexedDB)
 - `src/backup.js` – backup file save/restore
 - `scripts/make-icons.mjs` – renders all icons from `assets/icon.svg`; then `npx capacitor-assets generate --android`

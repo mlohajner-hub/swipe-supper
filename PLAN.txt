@@ -50,3 +50,20 @@ NOTES (from setup, 2026-11-03)
   so ask before relying on it.
 - GitHub disables scheduled (cron) workflows in public repos after 60 days with
   no repo activity - plan around this in Phase 3.
+
+
+PHASE 3 DATA-SOURCE RESEARCH (2026-11-04)
+-----------------------------------------
+- ICA: bot protection (Akamai) blocks even robots.txt and the offers page for non-browser requests.
+  Off-limits: fetching it would mean bypassing protection.
+- Willys, Hemköp, City Gross (Axfood): public offer pages; robots.txt allows them (crawl-delay 10 s).
+  Data comes from undocumented internal endpoints, not a published API. High ToS risk, very fragile.
+- Lidl: national weekly offers on public pages, allowed by robots.txt. Medium risk, medium fragility.
+  Lidl Plus prices are member-only.
+- Coop: offers need a store chosen first; no public API. High risk, fragile.
+- Tjek (eTilbudsavis / Matpris): licensed flyer data for Swedish chains; API by partner agreement only,
+  price not public. Lowest risk, most robust. Request drafted (private/tjek-api-request.txt, not in git).
+- Matpriskollen: no public API.
+Decision: email Tjek; meanwhile offers are entered by hand in the app using the normalised format
+(store, product, price, unit price, valid from/to, member-only) so a feed can plug in later.
+Store locations come from OpenStreetMap (ODbL), rebuilt monthly into public/stores.json.
