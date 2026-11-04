@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Swipe Supper</string>
+    <string name="title_activity_main">Swipe Supper</string>
+    <string name="package_name">se.swipesupper.app</string>
+    <string name="custom_url_scheme">se.swipesupper.app</string>
+</resources>

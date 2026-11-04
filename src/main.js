@@ -1,0 +1,580 @@
+import './styles.css';
+import {Capacitor} from '@capacitor/core';
+import {aP,aM,aD,aB,aK,aF,aS,AISLES,ING,STAPLES,RAW,MEALS,MEAL_LABEL,MEAL_ORDER,DAYS,DAYS_LONG,TAGS,DIETS,UNITS,AISLE_COLOUR} from './data.js';
+import {loadPhotos,putPhoto,deletePhoto,clearPhotos} from './photos.js';
+import {saveBackup,readBackup,BACKUP_APP} from './backup.js';
+
+/* ---------- recipes ---------- */
+/* A recipe definition: built-in rows from RAW, or the user's own recipes from st.custom.
+   Both become the same runtime shape, so the deck, planner and shopping list treat them alike. */
+var STYLE_TAGS=TAGS.filter(function(t){return t!=='All'&&t!=='Mine'&&t!=='Quick'});
+function slug(s){return String(s).toLowerCase().trim().replace(/\s+/g,' ')}
+var KNOWN={};Object.keys(ING).forEach(function(k){KNOWN[slug(ING[k][0])]=k});
+/* Resolves one editor ingredient to an ING key. A known name in a compatible unit merges with the
+   built-in ingredient; anything else gets its own key per name+unit so it still merges across recipes. */
+function ingKey(it){
+  var u=UNITS.filter(function(x){return x[0]===it.unit})[0]||UNITS[5],k=KNOWN[slug(it.name)];
+  if(k&&ING[k][1]===u[1])return {key:k,amt:it.amt*u[2]};
+  k='c:'+slug(it.name)+'|'+u[1];
+  if(!ING[k])ING[k]=[String(it.name).trim(),u[1],AISLES.indexOf(it.aisle)>-1?it.aisle:aK,'',AISLE_COLOUR[it.aisle]||'#C9B24A'];
+  return {key:k,amt:it.amt*u[2]};
+}
+function buildRecipe(id,name,meals,time,tags,ings,steps,mine,userDiet){
+  var flags={};
+  ings.forEach(function(p){(ING[p[0]][3]||'').split(' ').forEach(function(f){if(f)flags[f]=1})});
+  var animal=flags.dairy||flags.egg||flags.animal;
+  tags=tags.slice();if(time<=25)tags.unshift('Quick');if(mine)tags.unshift('Mine');
+  var diet={'Vegetarian':!flags.meat&&!flags.fish,'Vegan':!flags.meat&&!flags.fish&&!animal,'Pescatarian':!flags.meat,'Gluten-free':!flags.gluten,'Dairy-free':!flags.dairy,'Nut-free':!flags.nuts};
+  /* Own recipes: a diet only counts if you ticked it AND no known ingredient contradicts it. */
+  if(mine)DIETS.forEach(function(d){diet[d]=!!(userDiet&&userDiet[d])&&diet[d]});
+  var colors=ings.map(function(p){return ING[p[0]]}).filter(function(i){return i[2]!==aS}).map(function(i){return i[4]});
+  return {id:id,name:name,meals:meals,time:time,tags:tags,ings:ings,steps:steps,mine:!!mine,fish:!!flags.fish,diet:diet,colors:colors.length?colors:['#C9B24A']};
+}
+var BUILTIN=RAW.map(function(r){return buildRecipe(r[0],r[1],r[2].split('').map(function(c){return MEALS[c]}),r[3],r[4],r[5],r[6],false)});
+function customRecipe(c){
+  var per2=2/(c.servings||2);
+  var ings=c.ings.filter(function(it){return it.name&&it.amt>0}).map(function(it){var x=ingKey(it);return [x.key,x.amt*per2]});
+  return buildRecipe(c.id,c.name,c.meals.length?c.meals:['dinner'],c.time||30,c.tags||[],ings,c.steps||[],true,c.diet);
+}
+var RECIPES=[],BYID={};
+function rebuildRecipes(){
+  RECIPES=BUILTIN.concat(st.custom.map(customRecipe));
+  BYID={};RECIPES.forEach(function(r){BYID[r.id]=r});
+  plateCache={};
+}
+
+/* ---------- state ---------- */
+/* Everything is saved on this device only (localStorage; photos in IndexedDB). Use the backup file to move or keep it. */
+var KEY='swipe-supper.v1';
+function defaults(){return {portions:2,meals:{breakfast:false,lunch:false,dinner:true},mealFilter:'dinner',tag:'All',diet:[],liked:[],skipped:[],plan:{},have:STAPLES.slice(),done:{},custom:[],seed:Math.floor(Math.random()*1e9),updated:0}}
+function normalise(o){var d=defaults();var s=Object.assign(d,o||{});s.meals=Object.assign(defaults().meals,(o&&o.meals)||{});if(!Array.isArray(s.custom))s.custom=[];return s}
+var st=defaults();
+try{var raw=localStorage.getItem(KEY);if(raw)st=normalise(JSON.parse(raw))}catch(e){}
+var photos={},plateCache={};
+rebuildRecipes();
+
+function save(){
+  st.updated=Date.now();
+  try{localStorage.setItem(KEY,JSON.stringify(st))}catch(e){toast('Could not save on this device')}
+}
+/* ---------- helpers ---------- */
+var $=function(id){return document.getElementById(id)};
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function hash(s){var h=2166136261;s=String(s);for(var i=0;i<s.length;i++){h^=s.charCodeAt(i);h=Math.imul(h,16777619)}return h>>>0}
+function rng(a){return function(){a|=0;a=a+0x6D2B79F5|0;var t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function trim1(n){return String(Math.round(n*10)/10)}
+function frac(v){var w=Math.floor(v+1e-9),r=Math.round((v-w)*4)/4,s=r===.25?'¼':r===.5?'½':r===.75?'¾':'';if(r===1){w+=1;s=''}return (w||s?(w||'')+s:'0')}
+function ppl(n){return n+(n===1?' person':' people')}
+function mealText(r){return r.meals.map(function(m){return MEAL_LABEL[m]}).join(' / ')}
+function ico(path,size,sw){return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="'+(sw||2.2)+'" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+path+'</svg>'}
+var I={
+  keep:'<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.5A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>',
+  skip:'<path d="M6 6l12 12M18 6L6 18"/>',
+  undo:'<path d="M9 14L4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+  info:'<circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/>',
+  check:'<path d="M5 12.5l4.5 4.5L19 7.5"/>'
+};
+function isoWeek(d){var t=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));var dn=t.getUTCDay()||7;t.setUTCDate(t.getUTCDate()+4-dn);var y0=new Date(Date.UTC(t.getUTCFullYear(),0,1));return Math.ceil((((t-y0)/86400000)+1)/7)}
+function mondayOf(d){var x=new Date(d.getFullYear(),d.getMonth(),d.getDate());x.setDate(x.getDate()-((x.getDay()+6)%7));return x}
+var toastTimer=null;
+function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(function(){t.classList.remove('show')},2400)}
+
+/* ---------- art ---------- */
+function plate(r){
+  if(plateCache[r.id])return plateCache[r.id];
+  var rand=rng(hash(r.id)),cols=r.colors.filter(function(c,i,a){return a.indexOf(c)===i}).slice(0,5);
+  var s='<svg viewBox="0 0 200 200" aria-hidden="true"><circle cx="100" cy="105" r="94" fill="rgba(0,0,0,.12)"/><circle cx="100" cy="100" r="92" fill="var(--plate)"/><circle cx="100" cy="100" r="74" fill="var(--plate2)"/>';
+  var i,a,d,cx,cy;
+  for(i=0;i<8;i++){a=rand()*6.283;d=rand()*44;cx=100+Math.cos(a)*d;cy=100+Math.sin(a)*d;
+    s+='<ellipse cx="'+cx.toFixed(1)+'" cy="'+cy.toFixed(1)+'" rx="'+(13+rand()*17).toFixed(1)+'" ry="'+(9+rand()*12).toFixed(1)+'" transform="rotate('+Math.round(rand()*180)+' '+cx.toFixed(1)+' '+cy.toFixed(1)+')" fill="'+cols[i%cols.length]+'" opacity=".95"/>'}
+  for(i=0;i<14;i++){a=rand()*6.283;d=rand()*58;
+    s+='<circle cx="'+(100+Math.cos(a)*d).toFixed(1)+'" cy="'+(100+Math.sin(a)*d).toFixed(1)+'" r="'+(2+rand()*3.5).toFixed(1)+'" fill="'+cols[Math.floor(rand()*cols.length)]+'"/>'}
+  return plateCache[r.id]=s+'</svg>';
+}
+function artInner(r){return photos[r.id]?'<img src="'+photos[r.id]+'" alt="'+esc(r.name)+'" draggable="false">':plate(r)}
+function artHtml(r){return '<div class="art" style="--c:'+r.colors[0]+'">'+artInner(r)+'</div>'}
+function thumb(r){return '<span class="thumb" style="--c:'+r.colors[0]+'">'+artInner(r)+'</span>'}
+function pills(r,max){
+  var out=r.mine?[['Mine',2]]:[];
+  if(r.diet.Vegan)out.push(['Vegan',1]);else if(r.diet.Vegetarian)out.push(['Vegetarian',1]);else if(r.fish&&r.diet.Pescatarian)out.push(['Pescatarian',1]);
+  if(r.diet['Gluten-free'])out.push(['Gluten-free',1]);
+  if(r.diet['Dairy-free'])out.push(['Dairy-free',1]);
+  r.tags.forEach(function(t){if(t!=='Mine')out.push([t,0])});
+  return out.slice(0,max||5).map(function(p){return '<span class="pill'+(p[1]===2?' mine':p[1]?' diet':'')+'">'+esc(p[0])+'</span>'}).join('');
+}
+
+/* ---------- discover ---------- */
+var history=[],drag=null,busy=false;
+function baseFiltered(){return RECIPES.filter(function(r){return (st.mealFilter==='all'||r.meals.indexOf(st.mealFilter)>-1)&&st.diet.every(function(d){return r.diet[d]})})}
+function remaining(){return baseFiltered().filter(function(r){return st.liked.indexOf(r.id)<0&&st.skipped.indexOf(r.id)<0})}
+function deckList(){
+  return remaining().filter(function(r){return st.tag==='All'||r.tags.indexOf(st.tag)>-1}).sort(function(a,b){return hash(a.id+st.seed)-hash(b.id+st.seed)});
+}
+function filtersHtml(){
+  var base=remaining(),counts={};
+  TAGS.forEach(function(t){counts[t]=base.filter(function(r){return t==='All'||r.tags.indexOf(t)>-1}).length});
+  var meals=[['all','All'],['breakfast','Breakfast'],['lunch','Lunch'],['dinner','Dinner']];
+  return '<div class="seg" role="group" aria-label="Meal type">'+meals.map(function(m){return '<button aria-pressed="'+(st.mealFilter===m[0])+'" data-act="mealfilter" data-a="'+m[0]+'">'+m[1]+'</button>'}).join('')+'</div>'
+  +'<div class="chips" role="group" aria-label="Style">'+TAGS.filter(function(t){return counts[t]>0||t===st.tag}).map(function(t){return '<button class="chip" aria-pressed="'+(st.tag===t)+'" data-act="tag" data-a="'+t+'">'+t+'<span class="n">'+counts[t]+'</span></button>'}).join('')+'</div>'
+  +'<div class="chips" role="group" aria-label="Diet"><span class="chip-label">Diet</span>'+DIETS.map(function(d){return '<button class="chip diet" aria-pressed="'+(st.diet.indexOf(d)>-1)+'" data-act="diet" data-a="'+d+'">'+d+'</button>'}).join('')+'</div>';
+}
+function cardHtml(r,pos){
+  return '<article class="card '+(pos===0?'top':'pos'+pos)+'" data-id="'+r.id+'"'+(pos?' aria-hidden="true"':'')+'>'+artHtml(r)
+  +'<span class="stamp keep">KEEP</span><span class="stamp skip">SKIP</span>'
+  +'<div class="card-body"><h2>'+esc(r.name)+'</h2><div class="meta"><span>'+mealText(r)+'</span><span>'+r.time+' min</span><span>'+r.ings.length+' ingredients</span></div><div class="pills">'+pills(r,5)+'</div></div></article>';
+}
+function renderDiscover(){
+  var list=deckList(),top=list.slice(0,3),deck;
+  if(!top.length){
+    deck='<div class="deck-empty"><h2>'+(st.liked.length||st.skipped.length?'You have seen them all':'Nothing fits these filters')+'</h2><p>'+(st.skipped.length?'Bring back the ones you skipped, or loosen the meal, style or diet filters.':'Try another meal type, style or diet.')+'</p>'
+      +(st.skipped.length?'<button class="btn primary" data-act="resetskipped">Bring back skipped ('+st.skipped.length+')</button>':'')
+      +(st.liked.length?'<button class="btn" data-act="tab" data-a="week">Plan the week</button>':'')+'</div>';
+  }else{
+    deck='<div class="deck" id="deck">'+top.slice().reverse().map(function(r,i){return cardHtml(r,top.length-1-i)}).join('')+'</div>';
+  }
+  var none=!top.length;
+  $('view-discover').innerHTML=filtersHtml()+deck
+  +'<div class="actions"><button class="round skip" data-act="swipe" data-a="skip" aria-label="Skip" title="Skip (left arrow)"'+(none?' disabled':'')+'>'+ico(I.skip,28,2.6)+'</button>'
+  +'<button class="round small" data-act="undo" aria-label="Undo last swipe"'+(history.length?'':' disabled')+'>'+ico(I.undo,22)+'</button>'
+  +'<button class="round small" data-act="info" aria-label="Open recipe"'+(none?' disabled':'')+'>'+ico(I.info,22)+'</button>'
+  +'<button class="round keep" data-act="swipe" data-a="keep" aria-label="Keep" title="Keep (right arrow)"'+(none?' disabled':'')+'>'+ico(I.keep,28,2.4)+'</button></div>'
+  +'<p class="status">'+list.length+' left &middot; '+st.liked.length+' kept'+(st.liked.length<2&&st.skipped.length<2?'<br>Swipe right to keep, left to skip. Tap a card for the recipe.':'')+'</p>';
+}
+function resetCard(c){c.style.transform='';c.querySelectorAll('.stamp').forEach(function(s){s.style.opacity=0})}
+function flyOut(c,dir,dy){
+  busy=true;
+  var reduce=window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches,id=c.dataset.id;
+  c.querySelector(dir>0?'.stamp.keep':'.stamp.skip').style.opacity=1;
+  c.style.transition=reduce?'none':'transform .28s ease-in,opacity .28s';
+  c.style.transform='translate('+dir*(window.innerWidth+80)+'px,'+dy+'px) rotate('+dir*22+'deg)';
+  c.style.opacity=0;
+  setTimeout(function(){decide(id,dir);busy=false},reduce?0:260);
+}
+function swipeTop(dir){var c=document.querySelector('.card.top');if(!c||busy)return;flyOut(c,dir,0)}
+function decide(id,dir){
+  st.liked=st.liked.filter(function(x){return x!==id});st.skipped=st.skipped.filter(function(x){return x!==id});
+  (dir>0?st.liked:st.skipped).push(id);
+  history.push({id:id,dir:dir});save();renderAll();
+}
+function undo(){
+  var h=history.pop();if(!h)return;
+  st.liked=st.liked.filter(function(x){return x!==h.id});st.skipped=st.skipped.filter(function(x){return x!==h.id});
+  save();renderAll();
+}
+(function(){
+  var vd=$('view-discover');
+  vd.addEventListener('pointerdown',function(e){
+    if(busy||e.button>0)return;var c=e.target.closest('.card.top');if(!c)return;
+    drag={c:c,id:c.dataset.id,x:e.clientX,y:e.clientY,dx:0,dy:0,t:performance.now(),moved:false,pid:e.pointerId};
+    try{c.setPointerCapture(e.pointerId)}catch(err){}
+    c.classList.add('dragging');
+  });
+  vd.addEventListener('pointermove',function(e){
+    if(!drag||e.pointerId!==drag.pid)return;
+    drag.dx=e.clientX-drag.x;drag.dy=e.clientY-drag.y;
+    if(Math.abs(drag.dx)>6||Math.abs(drag.dy)>6)drag.moved=true;
+    drag.c.style.transform='translate('+drag.dx+'px,'+drag.dy*.4+'px) rotate('+drag.dx/18+'deg)';
+    drag.c.querySelector('.stamp.keep').style.opacity=Math.max(0,Math.min(1,drag.dx/90));
+    drag.c.querySelector('.stamp.skip').style.opacity=Math.max(0,Math.min(1,-drag.dx/90));
+  });
+  function end(e,cancel){
+    if(!drag||e.pointerId!==drag.pid)return;
+    var d=drag;drag=null;d.c.classList.remove('dragging');
+    var dt=Math.max(1,performance.now()-d.t),speed=Math.abs(d.dx)/dt;
+    if(!cancel&&!d.moved&&dt<500){resetCard(d.c);openRecipe(d.id);return}
+    if(!cancel&&(Math.abs(d.dx)>110||(Math.abs(d.dx)>45&&speed>.55)))flyOut(d.c,d.dx>0?1:-1,d.dy*.4);
+    else resetCard(d.c);
+  }
+  vd.addEventListener('pointerup',function(e){end(e,false)});
+  vd.addEventListener('pointercancel',function(e){end(e,true)});
+})();
+
+/* ---------- week ---------- */
+function enabledMeals(){return MEAL_ORDER.filter(function(m){return st.meals[m]})}
+var clearArmed=false;
+function slotHtml(d,m){
+  var id=st.plan[d+'-'+m],r=id&&BYID[id];
+  if(r)return '<div class="slot"><button class="slot-main" data-act="slot" data-a="'+d+'" data-b="'+m+'">'+thumb(r)+'<span class="slot-txt"><small>'+MEAL_LABEL[m]+'</small><b>'+esc(r.name)+'</b><em>'+r.time+' min</em></span></button>'
+    +'<button class="x" data-act="unslot" data-a="'+d+'" data-b="'+m+'" aria-label="Remove '+esc(r.name)+' from '+DAYS_LONG[d]+' '+m+'">'+ico(I.skip,16,2.4)+'</button></div>';
+  return '<button class="slot empty" data-act="slot" data-a="'+d+'" data-b="'+m+'"><span class="plus">+</span><span class="slot-txt"><small>'+MEAL_LABEL[m]+'</small><b>Add a recipe</b></span></button>';
+}
+function renderWeek(){
+  var now=new Date(),today=(now.getDay()+6)%7,mon=mondayOf(now),em=enabledMeals();
+  var tray=st.liked.length?'<div class="tray">'+st.liked.map(function(id){var r=BYID[id];return r?'<button class="mini" data-act="open" data-a="'+id+'">'+thumb(r)+'<b>'+esc(r.name)+'</b></button>':''}).join('')+'</div>':'<p style="margin:0;color:var(--muted)">Recipes you keep with a right swipe land here.</p>';
+  var days='';
+  for(var d=0;d<7;d++){
+    var dt=new Date(mon.getFullYear(),mon.getMonth(),mon.getDate()+d);
+    days+='<section class="day'+(d===today?' today':'')+'"><header><b>'+DAYS_LONG[d]+'</b><span>'+dt.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+'</span>'+(d===today?'<span class="pill today">Today</span>':'')+'</header><div class="slots">'+em.map(function(m){return slotHtml(d,m)}).join('')+'</div></section>';
+  }
+  $('view-week').innerHTML='<div class="panel"><p class="h-label">Meals to plan</p><div class="chips wrap" style="padding-top:0">'+MEAL_ORDER.map(function(m){return '<button class="chip diet" aria-pressed="'+!!st.meals[m]+'" data-act="mealtoggle" data-a="'+m+'">'+MEAL_LABEL[m]+'</button>'}).join('')+'</div>'
+    +'<div class="row" style="margin-top:12px"><button class="btn primary" data-act="fill">Fill empty slots from my matches</button><button class="btn" data-act="clearweek">'+(clearArmed?'Tap again to clear':'Clear week')+'</button></div></div>'
+    +'<div class="panel"><p class="h-label">Your matches ('+st.liked.length+')</p>'+tray+'</div>'+days;
+}
+function openPicker(d,m){
+  var cand=RECIPES.filter(function(r){return r.meals.indexOf(m)>-1&&st.diet.every(function(x){return r.diet[x]})});
+  var liked=cand.filter(function(r){return st.liked.indexOf(r.id)>-1}),others=cand.filter(function(r){return st.liked.indexOf(r.id)<0});
+  function row(r){return '<button class="pick" data-act="pick" data-a="'+d+'" data-b="'+m+'" data-c="'+r.id+'">'+thumb(r)+'<span class="slot-txt"><b>'+esc(r.name)+'</b><em>'+r.time+' min &middot; '+esc(r.tags.slice(0,2).join(', '))+'</em></span></button>'}
+  sheetState={type:'picker'};
+  openSheet('<h2 class="sheet-title" style="margin-top:18px">'+MEAL_LABEL[m]+' &middot; '+DAYS_LONG[d]+'</h2>'
+    +(liked.length?'<div class="row" style="margin:8px 0 4px"><button class="btn" data-act="surprise" data-a="'+d+'" data-b="'+m+'">Surprise me from my matches</button></div><div class="sheet-sec"><h3>Your matches</h3>'+liked.map(row).join('')+'</div>':'<p style="color:var(--muted)">You have no kept '+m+' recipes yet. Pick any below, or swipe some first.</p>')
+    +'<div class="sheet-sec"><h3>More '+m+' ideas</h3>'+(others.map(row).join('')||'<p style="color:var(--muted)">Nothing else fits your diet filters.</p>')+'</div>','Choose a recipe');
+}
+function fillWeek(){
+  var filled=0,missing={},use={};
+  Object.keys(st.plan).forEach(function(k){use[st.plan[k]]=(use[st.plan[k]]||0)+1});
+  enabledMeals().forEach(function(m){
+    var pool=st.liked.map(function(id){return BYID[id]}).filter(function(r){return r&&r.meals.indexOf(m)>-1});
+    for(var d=0;d<7;d++){
+      var key=d+'-'+m;if(st.plan[key])continue;
+      if(!pool.length){missing[m]=1;continue}
+      var min=Math.min.apply(null,pool.map(function(r){return use[r.id]||0}));
+      var c=pool.filter(function(r){return (use[r.id]||0)===min});
+      var r=c[Math.floor(Math.random()*c.length)];
+      st.plan[key]=r.id;use[r.id]=(use[r.id]||0)+1;filled++;
+    }
+  });
+  save();renderAll();
+  var miss=Object.keys(missing);
+  toast(filled?('Filled '+filled+(filled===1?' slot':' slots')+(miss.length?'. No kept '+miss.join(' or ')+' recipes yet.':'')):(miss.length?'Keep some '+miss.join(' or ')+' recipes first.':'Every slot is already filled.'));
+}
+
+/* ---------- shopping ---------- */
+function computeList(){
+  var f=st.portions/2,tot={},uses={},meals=0;
+  enabledMeals().forEach(function(m){for(var d=0;d<7;d++){
+    var r=BYID[st.plan[d+'-'+m]];if(!r)continue;meals++;
+    r.ings.forEach(function(p){tot[p[0]]=(tot[p[0]]||0)+p[1]*f;(uses[p[0]]=uses[p[0]]||{})[r.name]=1});
+  }});
+  var haveSet={};st.have.forEach(function(k){haveSet[k]=1});
+  var items=Object.keys(tot).map(function(k){return {key:k,name:ING[k][0],aisle:ING[k][2],qty:shopQty(k,tot[k]),uses:Object.keys(uses[k]).join(', ')}});
+  items.sort(function(a,b){return AISLES.indexOf(a.aisle)-AISLES.indexOf(b.aisle)||a.name.localeCompare(b.name)});
+  return {meals:meals,buy:items.filter(function(i){return !haveSet[i.key]}),home:items.filter(function(i){return haveSet[i.key]})};
+}
+function shopQty(k,total){
+  var u=ING[k][1],v;
+  if(u==='g'||u==='ml'){var step=total<100?5:10;v=Math.ceil(total/step-1e-9)*step;return v>=1000?trim1(v/1000)+(u==='g'?' kg':' l'):v+' '+u}
+  if(u==='tbsp'||u==='tsp'){v=Math.ceil(total*2-1e-9)/2;return frac(v)+' '+u}
+  v=Math.ceil(total-1e-9);return u==='pcs'?String(v):v+' '+u;
+}
+function recQty(k,a){
+  var u=ING[k][1],v=a*st.portions/2;
+  if(u==='g'||u==='ml'){v=v<100?Math.round(v/5)*5:Math.round(v/10)*10;if(!v)v=5;return v>=1000?trim1(v/1000)+(u==='g'?' kg':' l'):v+' '+u}
+  v=Math.round(v*4)/4;if(!v)v=.25;return frac(v)+(u==='pcs'?'':' '+u);
+}
+function itemRow(i,home){
+  var done=!home&&st.done[i.key];
+  return '<div class="item'+(done?' done':'')+'">'
+  +(home?'<span></span>':'<button class="check" role="checkbox" aria-checked="'+!!done+'" aria-label="'+esc(i.name)+'" data-act="tick" data-a="'+i.key+'">'+(done?ico(I.check,16,3):'')+'</button>')
+  +'<div class="item-txt"><b>'+esc(i.name)+'</b><small>'+esc(i.uses)+'</small></div>'
+  +'<div class="item-r"><span class="amt">'+esc(i.qty)+'</span><button class="link" data-act="'+(home?'need':'have')+'" data-a="'+i.key+'">'+(home?'Need it':'At home')+'</button></div></div>';
+}
+function renderShop(){
+  var L=computeList(),v=$('view-shop');
+  if(!L.meals){
+    v.innerHTML='<div class="empty-view"><h2>Nothing planned yet</h2><p>Put recipes on the week and the ingredients show up here, merged and counted for '+ppl(st.portions)+'.</p><button class="btn primary" data-act="tab" data-a="week">Plan the week</button></div>';return;
+  }
+  var ticked=L.buy.filter(function(i){return st.done[i.key]}).length,total=L.buy.length;
+  var html='<div class="panel summary"><b>'+(total-ticked)+' to buy</b><p>'+L.meals+(L.meals===1?' meal':' meals')+' for '+ppl(st.portions)+' &middot; '+ticked+' of '+total+' in the basket</p><div class="bar" aria-hidden="true"><i style="width:'+(total?Math.round(ticked/total*100):0)+'%"></i></div>'
+    +'<div class="row"><button class="btn" data-act="copy">Copy list</button><button class="btn" data-act="untick"'+(ticked?'':' disabled')+'>Untick all</button></div></div>';
+  AISLES.forEach(function(a){
+    var its=L.buy.filter(function(i){return i.aisle===a});if(!its.length)return;
+    its.sort(function(x,y){return (st.done[x.key]?1:0)-(st.done[y.key]?1:0)});
+    html+='<section class="aisle"><h3 class="h-label">'+a+'</h3>'+its.map(function(i){return itemRow(i,false)}).join('')+'</section>';
+  });
+  if(L.home.length)html+='<details class="home"><summary>At home ('+L.home.length+')</summary>'+L.home.map(function(i){return itemRow(i,true)}).join('')+'</details>';
+  v.innerHTML=html;
+}
+function listText(){
+  var L=computeList(),lines=['Swipe Supper, week '+isoWeek(new Date())+', '+ppl(st.portions),''];
+  AISLES.forEach(function(a){
+    var its=L.buy.filter(function(i){return i.aisle===a&&!st.done[i.key]});if(!its.length)return;
+    lines.push(a);its.forEach(function(i){lines.push('- '+i.name+': '+i.qty)});lines.push('');
+  });
+  return lines.join('\n').trim();
+}
+
+/* ---------- sheet + recipe ---------- */
+var sheet=$('sheet'),panel=$('sheetPanel'),sheetState=null,lastFocus=null;
+function openSheet(html,label){
+  $('sheetBody').innerHTML=html;sheet.setAttribute('aria-label',label||'Details');
+  if(!sheet.classList.contains('open')){lastFocus=document.activeElement;sheet.classList.add('open');document.body.style.overflow='hidden'}
+  panel.scrollTop=0;
+}
+function closeSheet(){
+  sheet.classList.remove('open');sheetState=null;document.body.style.overflow='';
+  if(lastFocus&&lastFocus.focus){try{lastFocus.focus()}catch(e){}}
+}
+function openRecipe(id){
+  var r=BYID[id];if(!r)return;
+  var meal=r.meals.indexOf(st.mealFilter)>-1?st.mealFilter:(r.meals.filter(function(m){return st.meals[m]})[0]||r.meals[0]);
+  sheetState={type:'recipe',id:id,meal:meal};
+  openSheet('',r.name);paintRecipe(false);
+}
+function paintRecipe(keep){
+  var r=BYID[sheetState.id],meal=sheetState.meal,liked=st.liked.indexOf(r.id)>-1,top=panel.scrollTop;
+  var mealChips=r.meals.length>1?'<div class="chips wrap" style="padding:0 0 8px">'+r.meals.map(function(m){return '<button class="chip" aria-pressed="'+(m===meal)+'" data-act="sheetmeal" data-a="'+m+'">'+MEAL_LABEL[m]+'</button>'}).join('')+'</div>':'';
+  var dayBtns=DAYS.map(function(x,i){var cur=st.plan[i+'-'+meal];return '<button class="day-btn'+(cur===r.id?' on':(cur?' busy':''))+'" data-act="setplan" data-a="'+i+'" data-b="'+meal+'" data-c="'+r.id+'" aria-label="'+DAYS_LONG[i]+' '+meal+(cur===r.id?', planned':'')+'">'+x+'</button>'}).join('');
+  $('sheetBody').innerHTML='<div class="sheet-art">'+artHtml(r)+'</div><h2 class="sheet-title">'+esc(r.name)+'</h2>'
+  +'<div class="meta"><span>'+mealText(r)+'</span><span>'+r.time+' min</span><span>For '+ppl(st.portions)+'</span></div><div class="pills" style="margin-top:8px">'+pills(r,8)+'</div>'
+  +'<div class="row" style="margin-top:14px"><button class="btn'+(liked?'':' primary')+'" data-act="like" data-a="'+r.id+'">'+(liked?'Remove from matches':'Keep this recipe')+'</button>'
+  +'<button class="btn" data-act="photoadd" data-a="'+r.id+'">'+(photos[r.id]?'Replace photo':'Add your photo')+'</button>'+(photos[r.id]?'<button class="btn" data-act="photodel" data-a="'+r.id+'">Remove photo</button>':'')+'</div>'
+  +'<div class="sheet-sec"><h3>Put it on the week</h3>'+mealChips+'<div class="days">'+dayBtns+'</div></div>'
+  +'<div class="sheet-sec"><h3>Ingredients</h3><ul class="ing">'+r.ings.map(function(p){return '<li><span>'+esc(ING[p[0]][0])+'</span><span>'+esc(recQty(p[0],p[1]))+'</span></li>'}).join('')+'</ul></div>'
+  +'<div class="sheet-sec"><h3>Method</h3><ol class="steps">'+r.steps.map(function(s){return '<li><span>'+esc(s)+'</span></li>'}).join('')+'</ol></div>'
+  +(r.mine?'<div class="row" style="margin-top:20px"><button class="btn" data-act="editrecipe" data-a="'+r.id+'">Edit this recipe</button></div><p class="note">Your own recipe. Amounts are scaled from the servings you entered to the number of people you set at the top.</p>'
+    :'<p class="note">Starter recipe written by Claude. Amounts are for 2 servings and scaled to the number of people you set at the top. Salt and pepper are not listed.</p>');
+  if(keep)panel.scrollTop=top;
+}
+
+/* ---------- photos ---------- */
+var photoFor=null;
+function fileToJpeg(file,max,q){
+  return new Promise(function(res,rej){
+    var fr=new FileReader();fr.onerror=rej;
+    fr.onload=function(){var im=new Image();im.onerror=rej;
+      im.onload=function(){
+        var sc=Math.min(1,max/Math.max(im.width,im.height)),w=Math.round(im.width*sc),h=Math.round(im.height*sc),c=document.createElement('canvas');
+        c.width=w;c.height=h;c.getContext('2d').drawImage(im,0,0,w,h);
+        var url=c.toDataURL('image/jpeg',q);
+        if(url.length>190000&&max>360)fileToJpeg(file,max-160,q-.1).then(res,rej);else res(url);
+      };im.src=fr.result};
+    fr.readAsDataURL(file);
+  });
+}
+function setPhoto(id,url){
+  photos[id]=url;putPhoto(id,url).catch(function(){toast('Could not save the photo on this device')});
+}
+function delPhoto(id){
+  delete photos[id];deletePhoto(id).catch(function(){});
+}
+$('photoInput').addEventListener('change',function(e){
+  var f=e.target.files&&e.target.files[0];e.target.value='';if(!f||!photoFor)return;var id=photoFor;
+  fileToJpeg(f,720,.78).then(function(url){setPhoto(id,url);renderAll();if(sheetState&&sheetState.type==='recipe')paintRecipe(true);toast('Photo saved')}).catch(function(){toast('Could not read that image')});
+});
+
+/* ---------- my recipes ---------- */
+function renderMine(){
+  var mine=st.custom.map(function(c){return BYID[c.id]}).filter(Boolean).sort(function(a,b){return a.name.localeCompare(b.name)});
+  var list=mine.length?mine.map(function(r){return '<button class="pick" data-act="open" data-a="'+r.id+'">'+thumb(r)+'<span class="slot-txt"><b>'+esc(r.name)+'</b><em>'+mealText(r)+' &middot; '+r.time+' min &middot; '+r.ings.length+' ingredients</em></span></button>'}).join('')
+    :'<p style="margin:0 0 12px;color:var(--muted)">Recipes you add here show up in the swipe deck with the others, follow the same filters and go on the shopping list.</p>';
+  $('view-mine').innerHTML='<div class="panel"><p class="h-label">My recipes ('+mine.length+')</p>'+list
+    +'<button class="btn primary wide" style="margin-top:10px" data-act="newrecipe">+ New recipe</button></div>'
+    +'<div class="panel"><p class="h-label">Backup</p><p style="margin:0 0 12px;color:var(--muted)">Everything is saved on this device only. Uninstalling the app or clearing its data deletes it, so save a backup now and then.</p>'
+    +'<div class="row"><button class="btn" data-act="export">Save backup</button><button class="btn" data-act="import">Restore backup</button></div>'
+    +'<p class="note" style="margin-top:10px">'+(st.lastBackup?'Last backup saved '+new Date(st.lastBackup).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'})+'.':'No backup saved yet.')+'</p></div>';
+}
+function unitLabel(key){var u=ING[key][1];return u==='pcs'||u==='g'||u==='ml'||u==='tbsp'||u==='tsp'?u:'pcs'}
+function ingRow(it){
+  it=it||{name:'',amt:'',unit:'g',aisle:aP};
+  return '<div class="ing-row"><input class="ing-name" list="ingNames" placeholder="Ingredient" aria-label="Ingredient" maxlength="60" value="'+esc(it.name)+'">'
+  +'<button type="button" class="x" data-act="delingrow" aria-label="Remove ingredient">'+ico(I.skip,16,2.4)+'</button>'
+  +'<input class="ing-amt" type="number" inputmode="decimal" step="any" min="0" placeholder="Amount" aria-label="Amount" value="'+esc(it.amt)+'">'
+  +'<select class="ing-unit" aria-label="Unit">'+UNITS.map(function(u){return '<option'+(u[0]===it.unit?' selected':'')+'>'+u[0]+'</option>'}).join('')+'</select>'
+  +'<select class="ing-aisle" aria-label="Store section">'+AISLES.map(function(a){return '<option'+(a===it.aisle?' selected':'')+'>'+esc(a)+'</option>'}).join('')+'</select></div>';
+}
+function fchips(group,values,on){
+  return '<div class="chips wrap" style="padding:0 0 4px" role="group">'+values.map(function(v){return '<button type="button" class="chip'+(group==='diet'?' diet':'')+'" data-act="fchip" data-group="'+group+'" data-a="'+esc(v)+'" aria-pressed="'+(on.indexOf(v)>-1)+'">'+esc(MEAL_LABEL[v]||v)+'</button>'}).join('')+'</div>';
+}
+var delArmed=false;
+function openEditor(id){
+  var c=st.custom.filter(function(x){return x.id===id})[0];
+  var d=c||{name:'',meals:[st.mealFilter==='all'?'dinner':st.mealFilter],time:30,servings:2,tags:[],diet:{},ings:[],steps:[]};
+  var rows=(d.ings.length?d.ings:[null,null,null]).map(ingRow).join('');
+  delArmed=false;
+  sheetState={type:'editor',id:c?c.id:null};
+  openSheet('<form id="recipeForm" class="form" novalidate><h2 class="sheet-title" style="margin-top:18px">'+(c?'Edit recipe':'New recipe')+'</h2>'
+    +'<label class="field"><span>Name</span><input name="name" maxlength="80" required value="'+esc(d.name)+'"></label>'
+    +'<p class="h-label">Meals</p>'+fchips('meals',MEAL_ORDER,d.meals)
+    +'<div class="field-row"><label class="field"><span>Minutes</span><input name="time" type="number" inputmode="numeric" min="1" max="600" value="'+esc(d.time)+'"></label>'
+    +'<label class="field"><span>Servings the amounts are for</span><input name="servings" type="number" inputmode="numeric" min="1" max="12" value="'+esc(d.servings)+'"></label></div>'
+    +'<p class="h-label">Style</p>'+fchips('tags',STYLE_TAGS,d.tags)
+    +'<p class="h-label">Diet</p>'+fchips('diet',DIETS,DIETS.filter(function(x){return d.diet[x]}))
+    +'<p class="note" style="margin:0 0 12px">Tick the diets this recipe fits. Ingredients the app knows (like butter or chicken) still rule a diet out.</p>'
+    +'<p class="h-label">Ingredients</p><div id="ingRows">'+rows+'</div>'
+    +'<button type="button" class="btn" data-act="addingrow" style="margin-top:8px">+ Add ingredient</button>'
+    +'<datalist id="ingNames">'+Object.keys(ING).filter(function(k){return k.indexOf('c:')!==0}).map(function(k){return '<option value="'+esc(ING[k][0])+'">'}).join('')+'</datalist>'
+    +'<label class="field" style="margin-top:16px"><span>Method, one step per line</span><textarea name="steps" rows="6">'+esc(d.steps.join('\n'))+'</textarea></label>'
+    +'<div class="row" style="margin-top:16px"><button type="submit" class="btn primary">Save recipe</button><button type="button" class="btn" data-act="close">Cancel</button>'
+    +(c?'<button type="button" class="btn" data-act="delrecipe" data-a="'+c.id+'">Delete</button>':'')+'</div></form>',c?'Edit recipe':'New recipe');
+}
+function readEditor(f){
+  function on(g){return Array.prototype.map.call(f.querySelectorAll('[data-group="'+g+'"][aria-pressed="true"]'),function(b){return b.dataset.a})}
+  var ings=[],bad=0;
+  f.querySelectorAll('.ing-row').forEach(function(row){
+    var name=row.querySelector('.ing-name').value.trim(),amt=parseFloat(String(row.querySelector('.ing-amt').value).replace(',','.'));
+    if(!name)return;
+    if(!(amt>0)){bad++;return}
+    ings.push({name:name,amt:amt,unit:row.querySelector('.ing-unit').value,aisle:row.querySelector('.ing-aisle').value});
+  });
+  var diet={};on('diet').forEach(function(x){diet[x]=true});
+  return {name:f.elements.name.value.trim(),meals:on('meals'),time:Math.max(1,Math.min(600,parseInt(f.elements.time.value,10)||30)),servings:Math.max(1,Math.min(12,parseInt(f.elements.servings.value,10)||2)),
+    tags:on('tags'),diet:diet,ings:ings,steps:f.elements.steps.value.split('\n').map(function(s){return s.trim()}).filter(Boolean),bad:bad};
+}
+function saveEditor(f){
+  var d=readEditor(f);
+  if(!d.name){toast('Give the recipe a name');f.elements.name.focus();return}
+  if(d.bad){toast('Give every ingredient an amount');return}
+  if(!d.ings.length){toast('Add at least one ingredient');return}
+  if(!d.meals.length)d.meals=['dinner'];
+  delete d.bad;
+  d.id=sheetState.id||('u-'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36));
+  var i=st.custom.map(function(x){return x.id}).indexOf(d.id);
+  if(i>-1)st.custom[i]=d;else st.custom.push(d);
+  save();rebuildRecipes();renderAll();
+  var r=BYID[d.id],lost=DIETS.filter(function(x){return d.diet[x]&&!r.diet[x]});
+  openRecipe(d.id);
+  toast(lost.length?'Saved. Not '+lost.join(', ')+' because of an ingredient':'Recipe saved');
+}
+function deleteRecipe(id){
+  st.custom=st.custom.filter(function(x){return x.id!==id});
+  st.liked=st.liked.filter(function(x){return x!==id});st.skipped=st.skipped.filter(function(x){return x!==id});
+  Object.keys(st.plan).forEach(function(k){if(st.plan[k]===id)delete st.plan[k]});
+  delPhoto(id);save();rebuildRecipes();closeSheet();renderAll();toast('Recipe deleted');
+}
+document.addEventListener('submit',function(e){if(e.target.id==='recipeForm'){e.preventDefault();saveEditor(e.target)}});
+document.addEventListener('change',function(e){
+  /* Picking a known ingredient sets its unit and store section, so it merges with the built-in recipes on the list. */
+  if(!e.target.classList.contains('ing-name'))return;
+  var k=KNOWN[slug(e.target.value)];if(!k)return;
+  var row=e.target.closest('.ing-row');row.querySelector('.ing-unit').value=unitLabel(k);row.querySelector('.ing-aisle').value=ING[k][2];
+});
+
+/* ---------- backup ---------- */
+var pendingRestore=null;
+function exportBackup(){
+  saveBackup({app:BACKUP_APP,v:1,exported:new Date().toISOString(),state:st,photos:photos}).then(function(how){
+    st.lastBackup=Date.now();save();renderMine();toast(how==='shared'?'Backup ready to save':'Backup downloaded');
+  }).catch(function(){toast('Backup not saved')});
+}
+$('backupInput').addEventListener('change',function(e){
+  var f=e.target.files&&e.target.files[0];e.target.value='';if(!f)return;
+  f.text().then(function(text){
+    pendingRestore=readBackup(text);
+    var s=normalise(pendingRestore.state),when=pendingRestore.exported?new Date(pendingRestore.exported).toLocaleString('en-GB',{day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}):'an unknown date';
+    sheetState={type:'restore'};
+    openSheet('<h2 class="sheet-title" style="margin-top:18px">Restore this backup?</h2><p>Saved '+esc(when)+': '+s.custom.length+' own recipes, '+Object.keys(s.plan).length+' planned meals, '+Object.keys(pendingRestore.photos||{}).length+' photos.</p>'
+      +'<p style="color:var(--muted)">This replaces everything currently saved in the app on this device.</p><div class="row" style="margin-top:14px"><button class="btn primary" data-act="restore">Replace with backup</button><button class="btn" data-act="close">Cancel</button></div>','Restore backup');
+  }).catch(function(err){toast(err&&err.message||'Could not read that file')});
+});
+function restoreBackup(){
+  var d=pendingRestore;pendingRestore=null;if(!d)return;
+  st=normalise(d.state);save();
+  photos=Object.assign({},d.photos||{});
+  clearPhotos().then(function(){return Promise.all(Object.keys(photos).map(function(id){return putPhoto(id,photos[id])}))}).catch(function(){toast('Some photos could not be restored')});
+  history=[];rebuildRecipes();closeSheet();renderAll();toast('Backup restored');
+}
+
+/* ---------- render all ---------- */
+function renderHeader(){
+  $('pLabel').textContent=ppl(st.portions);$('pMinus').disabled=st.portions<=1;$('pPlus').disabled=st.portions>=5;
+  $('weekLabel').textContent='Week '+isoWeek(new Date());
+}
+function renderTabs(){
+  var planned=0;enabledMeals().forEach(function(m){for(var d=0;d<7;d++)if(BYID[st.plan[d+'-'+m]])planned++});
+  var L=computeList(),left=L.buy.filter(function(i){return !st.done[i.key]}).length;
+  var bw=$('badgeWeek'),bs=$('badgeShop');
+  bw.hidden=!planned;bw.textContent=planned;bs.hidden=!left;bs.textContent=left;
+}
+function renderAll(){
+  var ae=document.activeElement,sel=null;
+  if(ae&&ae.dataset&&ae.dataset.act&&!sheet.contains(ae))sel='[data-act="'+ae.dataset.act+'"]'+(ae.dataset.a!==undefined?'[data-a="'+ae.dataset.a+'"]':'')+(ae.dataset.b!==undefined?'[data-b="'+ae.dataset.b+'"]':'');
+  renderHeader();renderDiscover();renderWeek();renderShop();renderMine();renderTabs();
+  if(sel){try{var el=document.querySelector('main '+sel+':not(:disabled)')||document.querySelector(sel+':not(:disabled)');if(el)el.focus({preventScroll:true})}catch(e){}}
+}
+var tab='discover';
+function setTab(t){
+  tab=t;['discover','week','shop','mine'].forEach(function(n){$('view-'+n).hidden=n!==t});
+  document.querySelectorAll('.tabs button').forEach(function(b){b.setAttribute('aria-current',b.dataset.a===t?'page':'false')});
+  window.scrollTo(0,0);
+}
+
+/* ---------- events ---------- */
+document.addEventListener('click',function(e){
+  var t=e.target.closest('[data-act]');if(!t)return;
+  var act=t.dataset.act,a=t.dataset.a,b=t.dataset.b,c=t.dataset.c,i;
+  switch(act){
+    case 'tab':closeSheet();setTab(a);break;
+    case 'portions':st.portions=Math.max(1,Math.min(5,st.portions+(+a)));save();renderAll();if(sheetState&&sheetState.type==='recipe')paintRecipe(true);break;
+    case 'mealfilter':st.mealFilter=a;save();renderAll();break;
+    case 'tag':st.tag=a;save();renderAll();break;
+    case 'diet':i=st.diet.indexOf(a);if(i>-1)st.diet.splice(i,1);else st.diet.push(a);save();renderAll();break;
+    case 'swipe':swipeTop(a==='keep'?1:-1);break;
+    case 'undo':undo();break;
+    case 'info':var tc=document.querySelector('.card.top');if(tc)openRecipe(tc.dataset.id);break;
+    case 'resetskipped':st.skipped=[];save();renderAll();break;
+    case 'open':openRecipe(a);break;
+    case 'close':closeSheet();break;
+    case 'like':
+      if(st.liked.indexOf(a)>-1)st.liked=st.liked.filter(function(x){return x!==a});
+      else{st.liked.push(a);st.skipped=st.skipped.filter(function(x){return x!==a})}
+      save();renderAll();paintRecipe(true);break;
+    case 'sheetmeal':sheetState.meal=a;paintRecipe(true);break;
+    case 'setplan':
+      var k=a+'-'+b;
+      if(st.plan[k]===c){delete st.plan[k];toast('Removed from '+DAYS_LONG[+a])}
+      else{st.plan[k]=c;st.meals[b]=true;if(st.liked.indexOf(c)<0)st.liked.push(c);st.skipped=st.skipped.filter(function(x){return x!==c});toast('Planned for '+DAYS_LONG[+a]+' '+b)}
+      save();renderAll();paintRecipe(true);break;
+    case 'slot':openPicker(+a,b);break;
+    case 'unslot':delete st.plan[a+'-'+b];save();renderAll();break;
+    case 'pick':
+      st.plan[a+'-'+b]=c;if(st.liked.indexOf(c)<0)st.liked.push(c);st.skipped=st.skipped.filter(function(x){return x!==c});
+      save();closeSheet();renderAll();toast('Added to '+DAYS_LONG[+a]);break;
+    case 'surprise':
+      var pool=st.liked.map(function(id){return BYID[id]}).filter(function(r){return r&&r.meals.indexOf(b)>-1});
+      if(pool.length){var used={};Object.keys(st.plan).forEach(function(q){used[st.plan[q]]=1});var fresh=pool.filter(function(r){return !used[r.id]});var from=fresh.length?fresh:pool;var r=from[Math.floor(Math.random()*from.length)];
+        st.plan[a+'-'+b]=r.id;save();closeSheet();renderAll();toast(r.name)}
+      break;
+    case 'mealtoggle':
+      st.meals[a]=!st.meals[a];if(!enabledMeals().length)st.meals[a]=true;save();renderAll();break;
+    case 'fill':fillWeek();break;
+    case 'clearweek':
+      if(!clearArmed){clearArmed=true;renderWeek();setTimeout(function(){if(clearArmed){clearArmed=false;renderWeek()}},3500)}
+      else{clearArmed=false;st.plan={};save();renderAll();toast('Week cleared')}
+      break;
+    case 'tick':if(st.done[a])delete st.done[a];else st.done[a]=true;save();renderAll();break;
+    case 'untick':st.done={};save();renderAll();break;
+    case 'have':if(st.have.indexOf(a)<0)st.have.push(a);save();renderAll();toast('Moved to At home');break;
+    case 'need':st.have=st.have.filter(function(x){return x!==a});save();renderAll();toast('Back on the list');break;
+    case 'copy':
+      var text=listText();
+      var fallback=function(){sheetState={type:'copy'};openSheet('<h2 class="sheet-title" style="margin-top:18px">Shopping list</h2><p style="color:var(--muted)">Select all and copy.</p><textarea class="copybox" id="copybox" readonly></textarea>','Shopping list');var tb=$('copybox');tb.value=text;tb.focus();tb.select()};
+      if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){toast('List copied')},fallback)}else fallback();
+      break;
+    case 'photoadd':photoFor=a;$('photoInput').click();break;
+    case 'photodel':delPhoto(a);renderAll();paintRecipe(true);toast('Photo removed');break;
+    case 'newrecipe':openEditor(null);break;
+    case 'editrecipe':openEditor(a);break;
+    case 'fchip':t.setAttribute('aria-pressed',t.getAttribute('aria-pressed')!=='true');break;
+    case 'addingrow':
+      $('ingRows').insertAdjacentHTML('beforeend',ingRow());
+      var rows=$('ingRows').querySelectorAll('.ing-name');rows[rows.length-1].focus();break;
+    case 'delingrow':
+      var row=t.closest('.ing-row');
+      if($('ingRows').children.length>1)row.remove();else row.querySelectorAll('input').forEach(function(x){x.value=''});
+      break;
+    case 'delrecipe':
+      if(!delArmed){delArmed=true;t.textContent='Tap again to delete';setTimeout(function(){if(delArmed&&t.isConnected){delArmed=false;t.textContent='Delete'}},3500)}
+      else{delArmed=false;deleteRecipe(a)}
+      break;
+    case 'export':exportBackup();break;
+    case 'import':$('backupInput').click();break;
+    case 'restore':restoreBackup();break;
+  }
+});
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape'&&sheet.classList.contains('open')){closeSheet();return}
+  if(sheet.classList.contains('open')||tab!=='discover')return;
+  var tg=e.target&&e.target.tagName;if(tg==='INPUT'||tg==='TEXTAREA'||tg==='SELECT')return;
+  if(e.key==='ArrowRight'){e.preventDefault();swipeTop(1)}
+  else if(e.key==='ArrowLeft'){e.preventDefault();swipeTop(-1)}
+});
+
+renderAll();
+loadPhotos().then(function(p){
+  photos=Object.assign(p,photos);
+  if(Object.keys(photos).length){renderAll();if(sheetState&&sheetState.type==='recipe')paintRecipe(true)}
+});
+/* Ask the browser not to evict our data under storage pressure (installed PWAs usually get this). */
+try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(function(){})}catch(e){}
+/* Offline support for the web/PWA version. The Android app ships its files inside the APK and doesn't need it. */
+if(!Capacitor.isNativePlatform())import('virtual:pwa-register').then(function(m){m.registerSW({immediate:true})}).catch(function(){});

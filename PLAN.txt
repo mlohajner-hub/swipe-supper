@@ -1,0 +1,52 @@
+SWIPE SUPPER - PROJECT PLAN
+===========================
+
+I have a working single-file web app called "Swipe Supper" (swipe-supper.html in this folder). It has: a Tinder-style swipe deck of recipes filtered by meal type (breakfast/lunch/dinner), style categories and diets; a week planner where I choose which meals to plan; portions from 1 to 5 people; and a shopping list that merges ingredients across the week, groups them by store section, lets me tick items off, and lets me mark items as "at home" so they drop off the list. It uses metric units and I shop in Sweden.
+
+Turn this into a real project and work in these phases. Finish and test each phase before starting the next, and ask me before choosing any paid service.
+
+Phase 1, Android app
+- Set up a proper project in this repo, keeping the app's behaviour and look.
+- Make it installable as a PWA and wrap it with Capacitor as an Android app.
+- Add a GitHub Actions workflow that builds a debug APK on every push and uploads it as a downloadable artifact. I do not have Android Studio.
+- The attached file uses a `window.claude` db/user sync that only works inside Claude. Remove it and keep saving on the phone only.
+- Tell me exactly how to download and install the APK.
+- My own recipes: add a screen where I can create, edit and delete my own recipes
+  (name, meal type, style category, diet tags, servings, ingredients with metric
+  amounts and store section, steps, optional photo). Saved on the phone only.
+  My recipes go into the swipe deck alongside the built-in ones, follow the same
+  meal-type/style/diet filters, and merge into the shopping list like any other
+  recipe. Mark them as "mine" on the card.
+- Add export/import of my recipes (and planner data) as a backup file, since
+  phone-only storage is lost if the app is uninstalled.
+
+Phase 2, real dish photos
+- Replace or supplement the 36 starter recipes with a recipe API that provides photos and structured ingredient amounts. Compare Spoonacular and TheMealDB: free-tier limits, terms of use, and whether the ingredient data supports my merged shopping list and my diet filters (vegetarian, vegan, pescatarian, gluten-free, dairy-free, nut-free).
+- Keep the plate illustrations as a fallback and keep "add your own photo".
+- My own recipes (from Phase 1) must keep working and keep appearing in the deck
+  mixed with the API recipes.
+- Keep API keys out of the repo.
+
+Phase 3, store offers in Sweden
+- Stores: ICA, Willys, Lidl, Coop, Hemköp, City Gross.
+- First research which data sources can legitimately be used (official or partner APIs, price-comparison services, public flyer pages) and tell me the terms-of-service risks and how fragile each option is. Do not log in to member accounts and do not bypass any protection.
+- Let me pick my stores once (by postcode or location) instead of detecting them automatically.
+- Build a small scheduled backend (a GitHub Actions cron job or a tiny serverless function, whichever is cheapest) that fetches weekly offers for my chosen stores and normalises them to: store, product, price, unit price, valid from/to, member-only flag.
+- In the app: match offers to shopping-list items and show "on offer at <store> until <date>", show which store is cheapest for the whole list, and add a "cook what's on sale" filter on the swipe deck. Always show the offer's validity dates and mark member-only prices.
+- Start with one or two chains, then add the rest.
+
+Keep everything free or cheap by default. Test in a browser as you go, summarise what changed after each phase, and tell me what you could not verify.
+
+
+NOTES (from setup, 2026-11-03)
+------------------------------
+- Installed on this PC: Git, Node.js v26.13.0, npm 11.20.0, GitHub CLI 2.103.3
+  (logged in as mlohajner-hub, scopes include repo + workflow).
+- No Android Studio / Android SDK / Java locally on purpose: the APK is built
+  by GitHub Actions in the cloud. Local testing is the web/PWA version in a browser.
+- Ask me whether the GitHub repo should be public or private before creating it
+  (public = unlimited free Actions minutes; private = 2,000 min/month free).
+- TheMealDB's free key is for testing; production use needs a paid supporter key,
+  so ask before relying on it.
+- GitHub disables scheduled (cron) workflows in public repos after 60 days with
+  no repo activity - plan around this in Phase 3.

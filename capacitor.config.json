@@ -1,0 +1,14 @@
+{
+  "appId": "se.swipesupper.app",
+  "appName": "Swipe Supper",
+  "webDir": "dist",
+  "android": {
+    "backgroundColor": "#EEF1EA"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover"
+    }
+  }
+}

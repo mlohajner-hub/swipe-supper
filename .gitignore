@@ -1,0 +1,11 @@
+node_modules/
+dist/
+dev-dist/
+.env
+.env.*
+*.keystore
+*.jks
+*.p12
+android/app/release/
+signing/
+.claude/settings.local.json
