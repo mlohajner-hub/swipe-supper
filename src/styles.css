@@ -247,3 +247,5 @@ small.offer.member,.member-tag{color:var(--accent)}
 .chip.friend{border-style:dashed}
 .chip.friend[aria-pressed="true"]{border-style:solid}
 .d-filters .chips{position:relative}
+.store-row a.btn{flex:none;padding:7px 10px;font-size:13px;text-decoration:none;color:inherit}
+a.chip{text-decoration:none;color:inherit}

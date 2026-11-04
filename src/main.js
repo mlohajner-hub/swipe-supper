@@ -657,13 +657,28 @@ function offersPanel(L){
       :live.length?'None of your current offers match this list.':'No current offers. Add the ones you spot in the flyer or the store\'s app.')+'</p>';
   }
   return h+'<div class="row"><button class="btn primary" data-act="offeradd">Add offer</button><button class="btn" data-act="offers">Offers ('+live.length+')</button>'
-    +'<button class="btn" data-act="stores">'+(st.stores.length?'My stores ('+st.stores.length+')':'Choose stores')+'</button></div></div>';
+    +'<button class="btn" data-act="stores">'+(st.stores.length?'My stores ('+st.stores.length+')':'Choose stores')+'</button></div>'
+    +'<p class="h-label" style="margin-top:14px">This week\'s offers on Matpriskollen</p><div class="chips wrap" style="padding-top:0">'
+    +(st.stores.length?st.stores.map(function(s){return '<a class="chip" href="'+esc(mpkUrl(s))+'" target="_blank" rel="noopener">'+esc(s.name)+' ↗</a>'}).join('')
+      :'<a class="chip" href="https://matpriskollen.se/erbjudanden" target="_blank" rel="noopener">Offers near you ↗</a>')
+    +'</div></div>';
+}
+/* Matpriskollen has offers for every store, but no API and its terms forbid copying them, so we only link to it:
+   the chain's page for your store's town (matpriskollen.se/mataffarer/willys/stockholm), where your store is listed. */
+var MPK_CHAIN={'ICA':'ica','Willys':'willys','Lidl':'lidl','Coop':'coop','Hemköp':'hemkop','City Gross':'city-gross'};
+function mpkSlug(s){return String(s).toLowerCase().replace(/[åä]/g,'a').replace(/ö/g,'o').replace(/é/g,'e').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')}
+function storeCity(s){var parts=String(s.address||'').split(',');return parts.length>1?parts[parts.length-1].trim():''}
+function mpkUrl(s){
+  var chain=MPK_CHAIN[s.chain],city=storeCity(s);
+  if(!chain)return 'https://matpriskollen.se/erbjudanden';
+  return 'https://matpriskollen.se/mataffarer/'+chain+(city?'/'+mpkSlug(city):'');
 }
 
 /* stores sheet */
 var storeResults=null,storeBusy=false,storeWhere='';
 function storeRow(s,chosen){
   return '<div class="pick store-row"><span class="chain-dot" aria-hidden="true">'+esc(s.chain==='City Gross'?'CG':s.chain.slice(0,2))+'</span><span class="slot-txt"><b>'+esc(s.name)+'</b><em>'+esc(s.address||s.chain)+(!chosen&&s.dist!=null?' · '+s.dist.toFixed(1)+' km':'')+'</em></span>'
+    +(chosen?'<a class="btn" href="'+esc(mpkUrl(s))+'" target="_blank" rel="noopener" title="This week\'s offers on Matpriskollen">Offers ↗</a>':'')
     +'<button class="btn" data-act="'+(chosen?'storedel':'storeadd')+'" data-a="'+esc(s.id)+'">'+(chosen?'Remove':'Add')+'</button></div>';
 }
 function paintStores(keep){
@@ -952,6 +967,14 @@ document.addEventListener('click',function(e){
       break;
   }
 });
+/* Outside links (Matpriskollen, TheMealDB, recipe sources) open in the phone's browser view in the Android app;
+   a plain new-window link would otherwise do nothing there. */
+document.addEventListener('click',function(e){
+  var a=e.target.closest&&e.target.closest('a[target="_blank"]');
+  if(!a||!Capacitor.isNativePlatform())return;
+  e.preventDefault();
+  import('@capacitor/browser').then(function(m){return m.Browser.open({url:a.href})}).catch(function(){window.location.href=a.href});
+},true);
 document.addEventListener('keydown',function(e){
   if(e.key==='Escape'&&sheet.classList.contains('open')){closeSheet();return}
   if(sheet.classList.contains('open')||tab!=='discover')return;
