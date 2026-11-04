@@ -11,7 +11,7 @@ import {packRecipe,unpackRecipe,findPacked,shareUrl,appIntentUrl,isAndroidBrowse
 /* ---------- recipes ---------- */
 /* A recipe definition: built-in rows from RAW, online recipes from TheMealDB, or the user's own recipes from st.custom.
    All become the same runtime shape, so the deck, planner and shopping list treat them alike. */
-var STYLE_TAGS=TAGS.filter(function(t){return t!=='All'&&t!=='Mine'&&t!=='Friends'&&t!=='Quick'});
+var STYLE_TAGS=TAGS.filter(function(t){return t!=='All'&&t!=='Mine'&&t!=='Friends'&&t!=='Quick'&&t!=='Low effort'});
 function slug(s){return String(s).toLowerCase().trim().replace(/\s+/g,' ')}
 var KNOWN={};Object.keys(ING).forEach(function(k){KNOWN[slug(ING[k][0])]=k});
 /* Resolves one editor ingredient to an ING key. A known name in a compatible unit merges with the
@@ -27,7 +27,11 @@ function buildRecipe(id,name,meals,time,tags,ings,steps,mine,userDiet){
   var flags={};
   ings.forEach(function(p){(ING[p[0]][3]||'').split(' ').forEach(function(f){if(f)flags[f]=1})});
   var animal=flags.dairy||flags.egg||flags.animal;
-  tags=tags.slice();if(time&&time<=25)tags.unshift('Quick');if(mine)tags.unshift(mine==='friend'?'Friends':'Mine');
+  tags=tags.slice();if(time&&time<=25)tags.unshift('Quick');
+  /* Low effort: few things to buy and prepare (oil and spices don't count), short method, and not long if the time is known. */
+  var real=ings.filter(function(p){return ING[p[0]][2]!==aS}).length;
+  if(real<=6&&steps.length<=5&&(!time||time<=30))tags.unshift('Low effort');
+  if(mine)tags.unshift(mine==='friend'?'Friends':'Mine');
   var diet={'Vegetarian':!flags.meat&&!flags.fish,'Vegan':!flags.meat&&!flags.fish&&!animal,'Pescatarian':!flags.meat,'Gluten-free':!flags.gluten,'Dairy-free':!flags.dairy,'Nut-free':!flags.nuts};
   /* Own recipes: a diet only counts if you ticked it AND no known ingredient contradicts it. */
   if(mine)DIETS.forEach(function(d){diet[d]=!!(userDiet&&userDiet[d])&&diet[d]});
@@ -207,7 +211,12 @@ function renderDiscover(){
   /* keep the chip rows where you scrolled them */
   var rows=v.querySelectorAll('.d-filters .chips'),scroll=Array.prototype.map.call(rows,function(c){return c.scrollLeft});
   v.querySelector('.d-filters').innerHTML=filtersHtml();
-  v.querySelectorAll('.d-filters .chips').forEach(function(c,i){if(scroll[i])c.scrollLeft=scroll[i]});
+  v.querySelectorAll('.d-filters .chips').forEach(function(c,i){
+    if(scroll[i])c.scrollLeft=scroll[i];
+    /* and make sure the chip you picked is in view, so it never looks like the filter fell back to All */
+    var on=c.querySelector('.chip[aria-pressed="true"]');
+    if(on&&(on.offsetLeft<c.scrollLeft||on.offsetLeft+on.offsetWidth>c.scrollLeft+c.clientWidth))c.scrollLeft=Math.max(0,on.offsetLeft-16);
+  });
   var dd=v.querySelector('.d-deck');
   if(!top.length){
     dd.innerHTML='<div class="deck-empty"><h2>'+(st.liked.length||st.skipped.length?'You have seen them all':'Nothing fits these filters')+'</h2><p>'+(st.skipped.length?'Bring back the ones you skipped, or loosen the meal, style or diet filters.':'Try another meal type, style or diet.')+'</p>'

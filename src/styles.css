@@ -246,3 +246,4 @@ small.offer.member,.member-tag{color:var(--accent)}
 .friend-name{margin:12px 0 2px;font-weight:700;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
 .chip.friend{border-style:dashed}
 .chip.friend[aria-pressed="true"]{border-style:solid}
+.d-filters .chips{position:relative}
