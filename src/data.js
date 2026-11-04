@@ -127,7 +127,7 @@ export const MEAL_LABEL={breakfast:'Breakfast',lunch:'Lunch',dinner:'Dinner'};
 export const MEAL_ORDER=['breakfast','lunch','dinner'];
 export const DAYS=['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
 export const DAYS_LONG=['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'];
-export const TAGS=['All','Mine','Quick','High-protein','Light','Comfort','Italian','Asian','Mexican','Nordic','Mediterranean','Soup','Bowl'];
+export const TAGS=['All','Mine','Friends','Quick','High-protein','Light','Comfort','Italian','Asian','Mexican','Nordic','Mediterranean','Soup','Bowl'];
 export const DIETS=['Vegetarian','Vegan','Pescatarian','Gluten-free','Dairy-free','Nut-free'];
 
 /* Units offered in the recipe editor: [label, stored unit, factor to stored unit]. */

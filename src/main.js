@@ -6,11 +6,12 @@ import {saveBackup,readBackup,BACKUP_APP} from './backup.js';
 import {fetchAllMeals,convertMeal,SERVINGS as ONLINE_SERVINGS} from './mealdb.js';
 import {CHAINS,geocodePostcode,storesNear,currentPosition} from './stores.js';
 import {matchItem,isActive,todayISO,thisSunday,kr,shortDate} from './offers.js';
+import {packRecipe,unpackRecipe,findPacked,shareUrl,appIntentUrl,isAndroidBrowser,shareLink,onAppLink} from './share.js';
 
 /* ---------- recipes ---------- */
 /* A recipe definition: built-in rows from RAW, online recipes from TheMealDB, or the user's own recipes from st.custom.
    All become the same runtime shape, so the deck, planner and shopping list treat them alike. */
-var STYLE_TAGS=TAGS.filter(function(t){return t!=='All'&&t!=='Mine'&&t!=='Quick'});
+var STYLE_TAGS=TAGS.filter(function(t){return t!=='All'&&t!=='Mine'&&t!=='Friends'&&t!=='Quick'});
 function slug(s){return String(s).toLowerCase().trim().replace(/\s+/g,' ')}
 var KNOWN={};Object.keys(ING).forEach(function(k){KNOWN[slug(ING[k][0])]=k});
 /* Resolves one editor ingredient to an ING key. A known name in a compatible unit merges with the
@@ -26,7 +27,7 @@ function buildRecipe(id,name,meals,time,tags,ings,steps,mine,userDiet){
   var flags={};
   ings.forEach(function(p){(ING[p[0]][3]||'').split(' ').forEach(function(f){if(f)flags[f]=1})});
   var animal=flags.dairy||flags.egg||flags.animal;
-  tags=tags.slice();if(time&&time<=25)tags.unshift('Quick');if(mine)tags.unshift('Mine');
+  tags=tags.slice();if(time&&time<=25)tags.unshift('Quick');if(mine)tags.unshift(mine==='friend'?'Friends':'Mine');
   var diet={'Vegetarian':!flags.meat&&!flags.fish,'Vegan':!flags.meat&&!flags.fish&&!animal,'Pescatarian':!flags.meat,'Gluten-free':!flags.gluten,'Dairy-free':!flags.dairy,'Nut-free':!flags.nuts};
   /* Own recipes: a diet only counts if you ticked it AND no known ingredient contradicts it. */
   if(mine)DIETS.forEach(function(d){diet[d]=!!(userDiet&&userDiet[d])&&diet[d]});
@@ -37,7 +38,10 @@ var BUILTIN=RAW.map(function(r){return buildRecipe(r[0],r[1],r[2].split('').map(
 function customRecipe(c){
   var per2=2/(c.servings||2);
   var ings=c.ings.filter(function(it){return it.name&&it.amt>0}).map(function(it){var x=ingKey(it);return [x.key,x.amt*per2]});
-  return buildRecipe(c.id,c.name,c.meals.length?c.meals:['dinner'],c.time||30,c.tags||[],ings,c.steps||[],true,c.diet);
+  /* Recipes added from a friend's link keep their author (c.from); yours are by you. */
+  var r=buildRecipe(c.id,c.name,c.meals.length?c.meals:['dinner'],c.time||30,c.tags||[],ings,c.steps||[],c.from?'friend':true,c.diet);
+  r.from=c.from||'';r.author=c.from||st.name||'';
+  return r;
 }
 /* Online recipes have no cooking time (TheMealDB doesn't give one), so they never count as Quick. */
 function onlineRecipe(m){
@@ -133,12 +137,12 @@ function artInner(r,size){
 function artHtml(r,size){return '<div class="art" style="--c:'+r.colors[0]+'">'+artInner(r,size)+'</div>'}
 function thumb(r){return '<span class="thumb" style="--c:'+r.colors[0]+'">'+artInner(r,'small')+'</span>'}
 function pills(r,max){
-  var out=r.mine?[['Mine',2]]:r.online?[['Online',0]]:[],sc=saleCount(r);
+  var out=r.from?[['by '+r.from,2]]:r.mine?[['Mine',2]]:r.online?[['Online',0]]:[],sc=saleCount(r);
   if(sc)out.unshift(['On sale: '+sc+(sc===1?' item':' items'),3]);
   if(r.diet.Vegan)out.push(['Vegan',1]);else if(r.diet.Vegetarian)out.push(['Vegetarian',1]);else if(r.fish&&r.diet.Pescatarian)out.push(['Pescatarian',1]);
   if(r.diet['Gluten-free'])out.push(['Gluten-free',1]);
   if(r.diet['Dairy-free'])out.push(['Dairy-free',1]);
-  r.tags.forEach(function(t){if(t!=='Mine')out.push([t,0])});
+  r.tags.forEach(function(t){if(t!=='Mine'&&t!=='Friends')out.push([t,0])});
   return out.slice(0,max||5).map(function(p){return '<span class="pill'+(p[1]===3?' sale':p[1]===2?' mine':p[1]?' diet':'')+'">'+esc(p[0])+'</span>'}).join('');
 }
 
@@ -147,8 +151,10 @@ var history=[],drag=null,busy=false;
 function baseFiltered(){return RECIPES.filter(function(r){return (st.mealFilter==='all'||r.meals.indexOf(st.mealFilter)>-1)&&st.diet.every(function(d){return r.diet[d]})})}
 function remaining(){return baseFiltered().filter(function(r){return st.liked.indexOf(r.id)<0&&st.skipped.indexOf(r.id)<0})}
 /* "Cook what's on sale": only recipes using something on offer at your stores, the most on-sale ingredients first. */
+/* st.tag is a style tag, or "by:<name>" for one friend's recipes. */
+function tagMatch(r,t){return t==='All'||(t.indexOf('by:')===0?r.from===t.slice(3):r.tags.indexOf(t)>-1)}
 function deckList(){
-  return remaining().filter(function(r){return (st.tag==='All'||r.tags.indexOf(st.tag)>-1)&&(!st.saleOnly||saleCount(r)>0)})
+  return remaining().filter(function(r){return tagMatch(r,st.tag)&&(!st.saleOnly||saleCount(r)>0)})
     .sort(function(a,b){return (st.saleOnly?saleCount(b)-saleCount(a):0)||hash(a.id+st.seed)-hash(b.id+st.seed)});
 }
 function filtersHtml(){
@@ -156,11 +162,15 @@ function filtersHtml(){
   var onSale=base.filter(function(r){return saleCount(r)>0}).length;
   if(st.saleOnly)base=base.filter(function(r){return saleCount(r)>0});
   TAGS.forEach(function(t){counts[t]=base.filter(function(r){return t==='All'||r.tags.indexOf(t)>-1}).length});
+  /* One chip per friend whose recipes you've added, right after "Friends". */
+  var friends={};base.forEach(function(r){if(r.from)friends[r.from]=(friends[r.from]||0)+1});
+  if(st.tag.indexOf('by:')===0&&!friends[st.tag.slice(3)])friends[st.tag.slice(3)]=0;
+  var friendChips=Object.keys(friends).sort(function(a,b){return a.localeCompare(b)}).map(function(f){return '<button class="chip friend" aria-pressed="'+(st.tag==='by:'+f)+'" data-act="tag" data-a="by:'+esc(f)+'">'+esc(f)+'<span class="n">'+friends[f]+'</span></button>'}).join('');
   var meals=[['all','All'],['breakfast','Breakfast'],['lunch','Lunch'],['dinner','Dinner']];
   return '<div class="seg" role="group" aria-label="Meal type">'+meals.map(function(m){return '<button aria-pressed="'+(st.mealFilter===m[0])+'" data-act="mealfilter" data-a="'+m[0]+'">'+m[1]+'</button>'}).join('')+'</div>'
   +'<div class="chips" role="group" aria-label="Style">'
   +(onSale||st.saleOnly?'<button class="chip sale" aria-pressed="'+!!st.saleOnly+'" data-act="saleonly" title="Cook what\'s on sale">On sale<span class="n">'+onSale+'</span></button>':'')
-  +TAGS.filter(function(t){return counts[t]>0||t===st.tag}).map(function(t){return '<button class="chip" aria-pressed="'+(st.tag===t)+'" data-act="tag" data-a="'+t+'">'+t+'<span class="n">'+counts[t]+'</span></button>'}).join('')+'</div>'
+  +TAGS.filter(function(t){return counts[t]>0||t===st.tag}).map(function(t){return '<button class="chip" aria-pressed="'+(st.tag===t)+'" data-act="tag" data-a="'+t+'">'+t+'<span class="n">'+counts[t]+'</span></button>'+(t==='Friends'?friendChips:'')}).join('')+'</div>'
   +'<div class="chips" role="group" aria-label="Diet"><span class="chip-label">Diet</span>'+DIETS.map(function(d){return '<button class="chip diet" aria-pressed="'+(st.diet.indexOf(d)>-1)+'" data-act="diet" data-a="'+d+'">'+d+'</button>'}).join('')+'</div>';
 }
 function cardHtml(r,pos){
@@ -168,18 +178,47 @@ function cardHtml(r,pos){
   +'<span class="stamp keep">KEEP</span><span class="stamp skip">SKIP</span>'
   +'<div class="card-body"><h2>'+esc(r.name)+'</h2><div class="meta"><span>'+mealText(r)+'</span><span>'+timeText(r)+'</span><span>'+r.ings.length+' ingredients</span></div><div class="pills">'+pills(r,5)+'</div></div></article>';
 }
+/* The deck keeps its card elements between renders: after a swipe the cards behind move up a place with
+   their scale transition and their photos stay loaded, instead of the whole stack being rebuilt (which made
+   the next card jump to full size and its photo flash in). Only a card that wasn't there yet is created. */
+function cardSig(r){return saleCount(r)+'|'+(photos[r.id]?'p':'')+'|'+(r.from||'')+'|'+r.name}
+function syncDeck(deck,top){
+  var have={};Array.prototype.forEach.call(deck.querySelectorAll('.card'),function(c){have[c.dataset.id]=c});
+  var keep={};
+  top.slice().reverse().forEach(function(r,ri){
+    var i=top.length-1-ri,el=have[r.id];
+    if(el&&el.dataset.sig!==cardSig(r)){el.remove();el=null}
+    if(!el){
+      var t=document.createElement('div');t.innerHTML=cardHtml(r,i);el=t.firstChild;el.dataset.sig=cardSig(r);
+      if(i>0){el.style.opacity=0;requestAnimationFrame(function(){requestAnimationFrame(function(){el.style.opacity=''})})}
+    }else{
+      el.className='card '+(i===0?'top':'pos'+i);
+      if(i)el.setAttribute('aria-hidden','true');else el.removeAttribute('aria-hidden');
+      el.style.transform='';el.style.opacity='';el.style.transition='';
+      el.querySelectorAll('.stamp').forEach(function(s){s.style.opacity=0});
+    }
+    keep[r.id]=1;deck.appendChild(el); /* back to front, so the top card paints last */
+  });
+  Object.keys(have).forEach(function(id){if(!keep[id])have[id].remove()});
+}
 function renderDiscover(){
-  var list=deckList(),top=list.slice(0,3),deck;
+  var list=deckList(),top=list.slice(0,3),v=$('view-discover');
+  if(!v.querySelector('.d-deck'))v.innerHTML='<div class="d-filters"></div><div class="d-deck"></div><div class="d-actions"></div>';
+  /* keep the chip rows where you scrolled them */
+  var rows=v.querySelectorAll('.d-filters .chips'),scroll=Array.prototype.map.call(rows,function(c){return c.scrollLeft});
+  v.querySelector('.d-filters').innerHTML=filtersHtml();
+  v.querySelectorAll('.d-filters .chips').forEach(function(c,i){if(scroll[i])c.scrollLeft=scroll[i]});
+  var dd=v.querySelector('.d-deck');
   if(!top.length){
-    deck='<div class="deck-empty"><h2>'+(st.liked.length||st.skipped.length?'You have seen them all':'Nothing fits these filters')+'</h2><p>'+(st.skipped.length?'Bring back the ones you skipped, or loosen the meal, style or diet filters.':'Try another meal type, style or diet.')+'</p>'
+    dd.innerHTML='<div class="deck-empty"><h2>'+(st.liked.length||st.skipped.length?'You have seen them all':'Nothing fits these filters')+'</h2><p>'+(st.skipped.length?'Bring back the ones you skipped, or loosen the meal, style or diet filters.':'Try another meal type, style or diet.')+'</p>'
       +(st.skipped.length?'<button class="btn primary" data-act="resetskipped">Bring back skipped ('+st.skipped.length+')</button>':'')
       +(st.liked.length?'<button class="btn" data-act="tab" data-a="week">Plan the week</button>':'')+'</div>';
   }else{
-    deck='<div class="deck" id="deck">'+top.slice().reverse().map(function(r,i){return cardHtml(r,top.length-1-i)}).join('')+'</div>';
+    if(!$('deck'))dd.innerHTML='<div class="deck" id="deck"></div>';
+    syncDeck($('deck'),top);
   }
   var none=!top.length;
-  $('view-discover').innerHTML=filtersHtml()+deck
-  +'<div class="actions"><button class="round skip" data-act="swipe" data-a="skip" aria-label="Skip" title="Skip (left arrow)"'+(none?' disabled':'')+'>'+ico(I.skip,28,2.6)+'</button>'
+  v.querySelector('.d-actions').innerHTML='<div class="actions"><button class="round skip" data-act="swipe" data-a="skip" aria-label="Skip" title="Skip (left arrow)"'+(none?' disabled':'')+'>'+ico(I.skip,28,2.6)+'</button>'
   +'<button class="round small" data-act="undo" aria-label="Undo last swipe"'+(history.length?'':' disabled')+'>'+ico(I.undo,22)+'</button>'
   +'<button class="round small" data-act="info" aria-label="Open recipe"'+(none?' disabled':'')+'>'+ico(I.info,22)+'</button>'
   +'<button class="round keep" data-act="swipe" data-a="keep" aria-label="Keep" title="Keep (right arrow)"'+(none?' disabled':'')+'>'+ico(I.keep,28,2.4)+'</button></div>'
@@ -193,6 +232,11 @@ function flyOut(c,dir,dy){
   c.style.transition=reduce?'none':'transform .28s ease-in,opacity .28s';
   c.style.transform='translate('+dir*(window.innerWidth+80)+'px,'+dy+'px) rotate('+dir*22+'deg)';
   c.style.opacity=0;
+  /* move the cards behind up straight away, so they grow while the top card flies off */
+  var deck=c.parentNode,p1=deck.querySelector('.card.pos1'),p2=deck.querySelector('.card.pos2');
+  if(p1){p1.className='card top';p1.removeAttribute('aria-hidden')}
+  if(p2)p2.className='card pos1';
+  c.classList.remove('top');
   setTimeout(function(){decide(id,dir);busy=false},reduce?0:260);
 }
 function swipeTop(dir){var c=document.querySelector('.card.top');if(!c||busy)return;flyOut(c,dir,0)}
@@ -362,13 +406,17 @@ function paintRecipe(keep){
   var mealChips=r.meals.length>1?'<div class="chips wrap" style="padding:0 0 8px">'+r.meals.map(function(m){return '<button class="chip" aria-pressed="'+(m===meal)+'" data-act="sheetmeal" data-a="'+m+'">'+MEAL_LABEL[m]+'</button>'}).join('')+'</div>':'';
   var dayBtns=DAYS.map(function(x,i){var cur=st.plan[i+'-'+meal];return '<button class="day-btn'+(cur===r.id?' on':(cur?' busy':''))+'" data-act="setplan" data-a="'+i+'" data-b="'+meal+'" data-c="'+r.id+'" aria-label="'+DAYS_LONG[i]+' '+meal+(cur===r.id?', planned':'')+'">'+x+'</button>'}).join('');
   $('sheetBody').innerHTML='<div class="sheet-art">'+artHtml(r,'')+'</div><h2 class="sheet-title">'+esc(r.name)+'</h2>'
+  +(r.mine&&r.author?'<p class="byline">by '+esc(r.author)+'</p>':'')
   +'<div class="meta"><span>'+mealText(r)+'</span><span>'+timeText(r)+'</span><span>For '+ppl(st.portions)+'</span></div><div class="pills" style="margin-top:8px">'+pills(r,8)+'</div>'
   +'<div class="row" style="margin-top:14px"><button class="btn'+(liked?'':' primary')+'" data-act="like" data-a="'+r.id+'">'+(liked?'Remove from matches':'Keep this recipe')+'</button>'
+  +(r.mine?'<button class="btn" data-act="share" data-a="'+r.id+'">Share with friends</button>':'')
   +'<button class="btn" data-act="photoadd" data-a="'+r.id+'">'+(photos[r.id]?'Replace photo':'Add your photo')+'</button>'+(photos[r.id]?'<button class="btn" data-act="photodel" data-a="'+r.id+'">Remove photo</button>':'')+'</div>'
   +'<div class="sheet-sec"><h3>Put it on the week</h3>'+mealChips+'<div class="days">'+dayBtns+'</div></div>'
   +'<div class="sheet-sec"><h3>Ingredients</h3><ul class="ing">'+r.ings.map(function(p){return '<li><span>'+esc(ING[p[0]][0])+offerLine(p[0])+'</span><span>'+esc(recQty(p[0],p[1]))+'</span></li>'}).join('')+'</ul></div>'
   +'<div class="sheet-sec"><h3>Method</h3><ol class="steps">'+r.steps.map(function(s){return '<li><span>'+esc(s)+'</span></li>'}).join('')+'</ol></div>'
-  +(r.mine?'<div class="row" style="margin-top:20px"><button class="btn" data-act="editrecipe" data-a="'+r.id+'">Edit this recipe</button></div><p class="note">Your own recipe. Amounts are scaled from the servings you entered to the number of people you set at the top.</p>'
+  +(r.mine?'<div class="row" style="margin-top:20px"><button class="btn" data-act="editrecipe" data-a="'+r.id+'">Edit this recipe</button></div><p class="note">'
+    +(r.from?'Shared with you by '+esc(r.from)+'. Your copy is saved on this device, and editing it doesn\'t change theirs.':'Your own recipe.')
+    +' Amounts are scaled from the servings entered to the number of people you set at the top.</p>'
     :r.online?'<p class="note">Recipe and photo from <a href="'+esc(r.link)+'" target="_blank" rel="noopener">TheMealDB</a>'+(r.source?' (<a href="'+esc(r.source)+'" target="_blank" rel="noopener">original source</a>)':'')+'. TheMealDB gives no servings, so amounts assume '+ONLINE_SERVINGS+' and are scaled to the number of people you set at the top; measures are converted to metric. Diet labels are worked out from the ingredient names, so check packaging if an allergy matters. Salt, pepper and water are not listed.</p>'
     :'<p class="note">Starter recipe written by Claude. Amounts are for 2 servings and scaled to the number of people you set at the top. Salt and pepper are not listed.</p>');
   if(keep)panel.scrollTop=top;
@@ -401,12 +449,21 @@ $('photoInput').addEventListener('change',function(e){
 });
 
 /* ---------- my recipes ---------- */
+function recipeRow(r){return '<button class="pick" data-act="open" data-a="'+r.id+'">'+thumb(r)+'<span class="slot-txt"><b>'+esc(r.name)+'</b><em>'+mealText(r)+' &middot; '+r.time+' min &middot; '+r.ings.length+' ingredients</em></span></button>'}
 function renderMine(){
-  var mine=st.custom.map(function(c){return BYID[c.id]}).filter(Boolean).sort(function(a,b){return a.name.localeCompare(b.name)});
-  var list=mine.length?mine.map(function(r){return '<button class="pick" data-act="open" data-a="'+r.id+'">'+thumb(r)+'<span class="slot-txt"><b>'+esc(r.name)+'</b><em>'+mealText(r)+' &middot; '+r.time+' min &middot; '+r.ings.length+' ingredients</em></span></button>'}).join('')
+  var all=st.custom.map(function(c){return BYID[c.id]}).filter(Boolean).sort(function(a,b){return a.name.localeCompare(b.name)});
+  var mine=all.filter(function(r){return !r.from}),byFriend={};
+  all.forEach(function(r){if(r.from)(byFriend[r.from]=byFriend[r.from]||[]).push(r)});
+  var friends=Object.keys(byFriend).sort(function(a,b){return a.localeCompare(b)});
+  var list=mine.length?mine.map(recipeRow).join('')
     :'<p style="margin:0 0 12px;color:var(--muted)">Recipes you add here show up in the swipe deck with the others, follow the same filters and go on the shopping list.</p>';
   $('view-mine').innerHTML='<div class="panel"><p class="h-label">My recipes ('+mine.length+')</p>'+list
     +'<button class="btn primary wide" style="margin-top:10px" data-act="newrecipe">+ New recipe</button></div>'
+    +'<div class="panel"><p class="h-label">From friends ('+(all.length-mine.length)+')</p>'
+    +(friends.length?friends.map(function(f){return '<p class="friend-name">'+esc(f)+' &middot; '+byFriend[f].length+'</p>'+byFriend[f].map(recipeRow).join('')}).join('')
+      :'<p style="margin:0 0 12px;color:var(--muted)">When a friend shares a recipe link with you, open it and it lands here, with their name on it. Open one of your recipes and tap <b>Share with friends</b> to send yours.</p>')
+    +'<button class="btn" style="margin-top:10px" data-act="pastelink">Add from a link</button>'
+    +'<label class="field form" style="margin-top:14px"><span>Your name, shown on recipes you share</span><input id="nameInput" maxlength="40" placeholder="e.g. Mario" value="'+esc(st.name||'')+'"></label></div>'
     +'<div class="panel"><p class="h-label">Online recipes</p><p style="margin:0 0 12px;color:var(--muted)">'
     +(onlineBusy?'Downloading recipes from TheMealDB…':ONLINE.length?ONLINE.length+' recipes with photos from <a href="https://www.themealdb.com" target="_blank" rel="noopener">TheMealDB</a>, kept on this device'+(onlineAt?' (updated '+new Date(onlineAt).toLocaleDateString('en-GB',{day:'numeric',month:'short'})+')':'')+'. '+(st.online?'They are mixed into the swipe deck.':'They are hidden from the deck.'):st.online?'Recipes with photos from TheMealDB download the first time you are online.':'Switched off.')+'</p>'
     +'<div class="row"><button class="btn" data-act="onlinetoggle">'+(st.online?'Hide from deck':'Show in deck')+'</button>'+(st.online?'<button class="btn" data-act="onlinerefresh"'+(onlineBusy?' disabled':'')+'>Update now</button>':'')+'</div></div>'
@@ -470,7 +527,8 @@ function saveEditor(f){
   delete d.bad;
   d.id=sheetState.id||('u-'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36));
   var i=st.custom.map(function(x){return x.id}).indexOf(d.id);
-  if(i>-1)st.custom[i]=d;else st.custom.push(d);
+  if(i>-1){if(st.custom[i].from){d.from=st.custom[i].from;d.origin=st.custom[i].origin}st.custom[i]=d} /* a friend's recipe stays theirs */
+  else st.custom.push(d);
   save();rebuildRecipes();renderAll();
   var r=BYID[d.id],lost=DIETS.filter(function(x){return d.diet[x]&&!r.diet[x]});
   openRecipe(d.id);
@@ -670,6 +728,63 @@ document.addEventListener('input',function(e){
 });
 document.addEventListener('change',function(e){if(e.target.id==='offerItem')e.target.dataset.manual='1'});
 
+/* ---------- sharing with friends ---------- */
+var pendingShare=null,pendingImport=null;
+function askName(then){
+  pendingShare=then;sheetState={type:'name'};
+  openSheet('<form id="nameForm" class="form" novalidate><h2 class="sheet-title" style="margin-top:18px">What\'s your name?</h2><p style="color:var(--muted)">Friends see it on the recipes you share with them.</p>'
+    +'<label class="field"><span>Your name</span><input name="name" maxlength="40" placeholder="e.g. Mario" value="'+esc(st.name||'')+'"></label>'
+    +'<div class="row" style="margin-top:16px"><button type="submit" class="btn primary">Continue</button><button type="button" class="btn" data-act="close">Cancel</button></div></form>','Your name');
+  setTimeout(function(){var i=document.querySelector('#nameForm input');if(i)i.focus()},50);
+}
+function shareRecipe(id){
+  var c=st.custom.filter(function(x){return x.id===id})[0];if(!c)return;
+  if(!c.from&&!st.name){askName(function(){shareRecipe(id)});return}
+  packRecipe(c,st.name).then(function(p){
+    var who=c.from||st.name;
+    return shareLink(c.name,(c.from?who+'\'s recipe for ':who+' shared a recipe: ')+c.name+'. Open the link to add it to Swipe Supper:',shareUrl(p));
+  }).then(function(how){if(how==='copied')toast('Link copied. Paste it to your friend')}).catch(function(e){if(e&&e.name!=='AbortError'&&!/cancel/i.test(e.message||''))toast('Could not share the recipe')});
+}
+/* A link from a friend: show what it is and let you add it (or update your copy if you have it already). */
+function showImport(packed){
+  unpackRecipe(packed).then(function(r){
+    pendingImport={packed:packed,recipe:r};
+    var have=st.custom.filter(function(c){return c.origin&&c.origin===r.origin})[0];
+    sheetState={type:'import'};
+    openSheet('<h2 class="sheet-title" style="margin-top:18px">'+esc(r.name)+'</h2><p class="byline">by '+esc(r.from)+'</p>'
+      +'<p style="color:var(--muted)">'+(r.meals.map(function(m){return MEAL_LABEL[m]}).join(' / ')||'Dinner')+' &middot; '+r.time+' min &middot; '+r.ings.length+' ingredients &middot; for '+r.servings+'</p>'
+      +'<ul class="ing">'+r.ings.slice(0,8).map(function(it){return '<li><span>'+esc(it.name)+'</span><span>'+esc(trim1(it.amt)+' '+it.unit)+'</span></li>'}).join('')+(r.ings.length>8?'<li><span>and '+(r.ings.length-8)+' more</span><span></span></li>':'')+'</ul>'
+      +'<div class="row" style="margin-top:16px"><button class="btn primary" data-act="importadd">'+(have?'Update my copy':'Add to my recipes')+'</button><button class="btn" data-act="close">Not now</button></div>'
+      +(isAndroidBrowser()?'<p class="note">Using the Swipe Supper app? <a href="'+esc(appIntentUrl(packed))+'">Open this recipe in the app</a> instead, so it\'s saved there.</p>':'')
+      +'<p class="note">Recipes from links are saved on this device only. Photos aren\'t included in links.</p>','Recipe from a friend');
+  }).catch(function(e){toast(e&&e.message||'That link doesn\'t contain a recipe')});
+}
+function importRecipe(){
+  var p=pendingImport;pendingImport=null;if(!p)return;
+  var r=p.recipe,i=st.custom.map(function(c){return c.origin||''}).indexOf(r.origin),id;
+  if(i>-1){id=st.custom[i].id;r.id=id;st.custom[i]=r}
+  else{id='u-'+Date.now().toString(36)+Math.floor(Math.random()*1296).toString(36);r.id=id;st.custom.push(r)}
+  save();rebuildRecipes();renderAll();openRecipe(id);toast(i>-1?'Updated '+r.name:'Added '+r.name+' from '+r.from);
+}
+function openPasteLink(){
+  sheetState={type:'paste'};
+  openSheet('<form id="pasteForm" class="form" novalidate><h2 class="sheet-title" style="margin-top:18px">Add from a link</h2><p style="color:var(--muted)">Paste the recipe link (or the whole message) a friend sent you.</p>'
+    +'<label class="field"><span>Link</span><textarea name="link" rows="4" placeholder="https://mlohajner-hub.github.io/swipe-supper/#r=…"></textarea></label>'
+    +'<div class="row" style="margin-top:16px"><button type="submit" class="btn primary">Show recipe</button><button type="button" class="btn" data-act="close">Cancel</button></div></form>','Add from a link');
+}
+document.addEventListener('submit',function(e){
+  if(e.target.id==='nameForm'){
+    e.preventDefault();var n=e.target.elements.name.value.trim();if(!n){toast('Write your name');return}
+    st.name=n;save();rebuildRecipes();renderAll();var then=pendingShare;pendingShare=null;closeSheet();if(then)then();
+  }else if(e.target.id==='pasteForm'){
+    e.preventDefault();var p=findPacked(e.target.elements.link.value);
+    if(p)showImport(p);else toast('That isn\'t a Swipe Supper recipe link');
+  }
+});
+document.addEventListener('change',function(e){
+  if(e.target.id==='nameInput'){st.name=e.target.value.trim().slice(0,40);save();rebuildRecipes();renderAll();toast(st.name?'Name saved':'Name removed')}
+});
+
 /* ---------- render all ---------- */
 function renderHeader(){
   $('pLabel').textContent=ppl(st.portions);$('pMinus').disabled=st.portions<=1;$('pPlus').disabled=st.portions>=5;
@@ -768,6 +883,9 @@ document.addEventListener('click',function(e){
     case 'onlinetoggle':st.online=!st.online;save();rebuildRecipes();renderAll();if(st.online)refreshOnline(false);break;
     case 'onlinerefresh':refreshOnline(true);break;
     case 'saleonly':st.saleOnly=!st.saleOnly;save();renderAll();break;
+    case 'share':shareRecipe(a);break;
+    case 'importadd':importRecipe();break;
+    case 'pastelink':openPasteLink();break;
     case 'stores':paintStores();break;
     case 'storeslocate':findStores(currentPosition());break;
     case 'storeadd':
@@ -802,6 +920,17 @@ getCached('mealdb').then(function(d){
   refreshOnline(false);
 });
 window.addEventListener('online',function(){refreshOnline(false)});
+/* Recipe links from friends: opened in the browser (#r=…), or handed to the Android app (swipesupper://import?r=…). */
+function checkLinkInUrl(){
+  var p=findPacked(location.hash)||findPacked(location.search);
+  if(!p)return;
+  /* Drop the recipe from the address bar (after the hash navigation settles) so a reload doesn't ask again. */
+  setTimeout(function(){try{window.history.replaceState(null,'',location.pathname)}catch(e){}},0);
+  setTab('mine');showImport(p);
+}
+checkLinkInUrl();
+window.addEventListener('hashchange',checkLinkInUrl);
+onAppLink(function(p){setTab('mine');showImport(p)}).catch(function(){});
 /* Ask the browser not to evict our data under storage pressure (installed PWAs usually get this). */
 try{if(navigator.storage&&navigator.storage.persist)navigator.storage.persist().catch(function(){})}catch(e){}
 /* Offline support for the web/PWA version. The Android app ships its files inside the APK and doesn't need it. */

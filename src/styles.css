@@ -240,3 +240,9 @@ small.offer.member,.member-tag{color:var(--accent)}
 .offer-row .btn{flex:none;padding:7px 12px;font-size:13px}
 .check-row{display:flex;gap:10px;align-items:flex-start;margin-top:14px;font-size:14px}
 .check-row input{width:auto;margin-top:3px}
+
+/* friends */
+.byline{margin:-2px 0 6px;color:var(--muted);font-weight:600;font-size:14px}
+.friend-name{margin:12px 0 2px;font-weight:700;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted)}
+.chip.friend{border-style:dashed}
+.chip.friend[aria-pressed="true"]{border-style:solid}
