@@ -249,3 +249,7 @@ small.offer.member,.member-tag{color:var(--accent)}
 .d-filters .chips{position:relative}
 .store-row a.btn{flex:none;padding:7px 10px;font-size:13px;text-decoration:none;color:inherit}
 a.chip{text-decoration:none;color:inherit}
+
+/* The deck fills what's left of the screen, so Discover never scrolls: when it did, the sticky header slid over
+   the meal-type selector and the swipe buttons went behind the tab bar. */
+.deck{height:clamp(300px,calc(100vh - 430px),540px);height:clamp(300px,calc(100dvh - 430px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px)),540px)}
